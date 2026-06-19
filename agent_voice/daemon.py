@@ -64,11 +64,13 @@ def process_once(
 
         voice_allowed = config.voice_enabled
         if deliver and not terminal_only and voice_allowed and config.min_seconds_between_voice_messages > 0:
-            last_voice_at = _last_voice_delivered_at(conn)
-            if (
-                last_voice_at is not None
-                and current_time - last_voice_at < config.min_seconds_between_voice_messages
-            ):
+            since = current_time - config.min_seconds_between_voice_messages
+            recent_sessions = _recently_voiced_sessions(conn, since)
+            candidate_sessions = {candidate.session_id for candidate in candidates}
+            # Throttle only same-session back-to-back voice. A different session is
+            # always voiced — the serial daemon plays it right after the previous one
+            # (no overlap), so distinct sessions are announced one after another.
+            if candidate_sessions and candidate_sessions <= recent_sessions:
                 voice_allowed = False
 
         summary_cost_usd = 0.0
@@ -242,22 +244,38 @@ def _event_type_enabled(config: AgentVoiceConfig, event_type: EventType) -> bool
     return True
 
 
-def _last_voice_delivered_at(conn: sqlite3.Connection) -> int | None:
-    """Return the delivery timestamp of the most recent spoken notification."""
-    row = conn.execute(
+def _recently_voiced_sessions(conn: sqlite3.Connection, since: int) -> set[str]:
+    """Return session ids that were spoken aloud at or after ``since``."""
+    rows = conn.execute(
         """
-        SELECT delivered_at FROM notifications
+        SELECT event_ids_json FROM notifications
         WHERE channel IN ('openai_tts', 'macos_say')
           AND spoken = 1
           AND delivered_at IS NOT NULL
-        ORDER BY id DESC
-        LIMIT 1
-        """
-    ).fetchone()
-    if row is None:
-        return None
-    value = row["delivered_at"] if isinstance(row, sqlite3.Row) else row[0]
-    return int(value) if value is not None else None
+          AND delivered_at >= ?
+        """,
+        (since,),
+    ).fetchall()
+    event_keys: set[str] = set()
+    for row in rows:
+        value = row["event_ids_json"] if isinstance(row, sqlite3.Row) else row[0]
+        try:
+            event_keys.update(json.loads(value or "[]"))
+        except (TypeError, ValueError):
+            continue
+    if not event_keys:
+        return set()
+    placeholders = ",".join("?" * len(event_keys))
+    session_rows = conn.execute(
+        f"SELECT DISTINCT session_id FROM events WHERE event_key IN ({placeholders})",
+        tuple(event_keys),
+    ).fetchall()
+    sessions: set[str] = set()
+    for row in session_rows:
+        value = row["session_id"] if isinstance(row, sqlite3.Row) else row[0]
+        if value:
+            sessions.add(value)
+    return sessions
 
 
 def run_daemon(config: AgentVoiceConfig, *, once: bool = False, deliver: bool = True, terminal_only: bool = False) -> None:

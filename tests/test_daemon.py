@@ -355,7 +355,7 @@ class DaemonTests(unittest.TestCase):
                         agent_name="codex",
                         event_type=EventType.TASK_FINISHED,
                         project_name="api",
-                        session_id=event_key,
+                        session_id="s1",  # same session — throttle applies
                     ),
                 )
 
@@ -367,13 +367,56 @@ class DaemonTests(unittest.TestCase):
                 enqueue("third")
                 process_once(conn, config, deliver=True, current_time=120)
 
-            # First spoken; second suppressed (within 8s); third allowed again (20s later).
+            # First spoken; second suppressed (same session within 8s); third allowed (20s later).
             self.assertEqual(seen_voice_enabled, [True, False, True])
             rows = conn.execute("SELECT channel, spoken FROM notifications ORDER BY id").fetchall()
             self.assertEqual(rows[0]["channel"], "openai_tts")
             self.assertEqual(rows[1]["channel"], "macos_notification")
             self.assertEqual(rows[1]["spoken"], 0)
             self.assertEqual(rows[2]["channel"], "openai_tts")
+            conn.close()
+
+    def test_different_sessions_are_not_throttled_and_play_in_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                min_seconds_between_voice_messages=8,
+            )
+            seen_voice_enabled: list[bool] = []
+
+            class FakeDeliveryRouter:
+                def __init__(self, config, *, terminal_only: bool = False) -> None:
+                    seen_voice_enabled.append(config.voice_enabled)
+
+                def deliver(self, message: str) -> list[DeliveryResult]:
+                    return [DeliveryResult(channel="openai_tts", delivered=True, spoken=True, audio_generated=True)]
+
+            def enqueue(event_key: str, session_id: str) -> None:
+                enqueue_event(
+                    conn,
+                    NormalizedEvent.build(
+                        event_key=event_key,
+                        agent_name="codex",
+                        event_type=EventType.TASK_FINISHED,
+                        project_name=session_id,
+                        session_id=session_id,
+                    ),
+                )
+
+            with patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter):
+                enqueue("a", "s1")
+                process_once(conn, config, deliver=True, current_time=100)
+                enqueue("b", "s2")  # different session, only 3s later
+                process_once(conn, config, deliver=True, current_time=103)
+
+            # Both voiced — distinct sessions are announced one after another.
+            self.assertEqual(seen_voice_enabled, [True, True])
+            rows = conn.execute("SELECT channel FROM notifications ORDER BY id").fetchall()
+            self.assertEqual([row["channel"] for row in rows], ["openai_tts", "openai_tts"])
             conn.close()
 
     def test_completed_notification_is_summarized_before_delivery(self) -> None:
