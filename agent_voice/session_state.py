@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .config import cache_warm_minutes
 from .intelligence.fallback import build_single_message
 from .models import (
     EventType,
@@ -111,9 +112,18 @@ class SessionStateManager:
             current_time,
         )
 
+        is_idle_reminder = (
+            new_status == SessionStatus.ATTENTION_REQUIRED
+            and event.event_type in {EventType.INPUT_NEEDED, EventType.SESSION_IDLE}
+            and existing is not None
+            and existing["last_notified_status"] == SessionStatus.COMPLETED.value
+        )
+
         message = ""
         candidate: NotificationCandidate | None = None
-        if should_notify:
+        if should_notify and is_idle_reminder:
+            message = self._build_reminder_message(event)
+        elif should_notify:
             message = build_single_message(
                 agent_name=event.agent_name,
                 project_name=event.subject(),
@@ -123,6 +133,7 @@ class SessionStateManager:
                 language=self.language,
                 templates=self.message_templates.get(self.language),
             )
+        if should_notify:
             candidate = NotificationCandidate(
                 event_key=event.event_key,
                 session_id=session_id,
@@ -190,6 +201,20 @@ class SessionStateManager:
             ),
         )
         return candidate
+
+    def _build_reminder_message(self, event: NormalizedEvent) -> str:
+        templates = self.message_templates.get(self.language, {})
+        template = templates.get("idle_reminder") or (
+            "Just a reminder: {project} is done and waiting for your reply — "
+            "within about {minutes} minutes, while {agent}'s cache is still warm."
+        )
+        agent_labels = {"claude-code": "Claude", "codex": "Codex"}
+        agent_label = agent_labels.get((event.agent_name or "").lower(), event.agent_name or "the agent")
+        return template.format(
+            project=event.subject(),
+            minutes=cache_warm_minutes(event.agent_name),
+            agent=agent_label,
+        )
 
     def _can_transition(self, existing: sqlite3.Row, run_id: str, new_status: SessionStatus) -> bool:
         existing_run = existing["run_id"]

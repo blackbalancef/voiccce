@@ -21,6 +21,26 @@ SUPPORTED_LANGUAGES = ("en",)
 SUMMARY_PRIVACY_LEVELS = ("metadata_only", "full_last_message")
 SUMMARY_PROVIDERS = ("fallback", "openai")
 DEFAULT_SUMMARY_MODEL = "gpt-5.4-nano"
+# Curated lists shown in the menu bar model pickers. Edit to taste; the current
+# value is always offered even if it is not listed here.
+SUMMARY_MODEL_CHOICES = ("gpt-5.4-nano", "gpt-5.4-mini", "gpt-4o-mini")
+TTS_MODEL_CHOICES = ("gpt-4o-mini-tts", "tts-1", "tts-1-hd")
+# Voices offered in the menu bar picker, per backend. The current value is
+# always offered even if it is not in this list.
+VOICE_CHOICES: dict[str, tuple[str, ...]] = {
+    "openai_tts": ("marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"),
+    "macos_say": ("Alex", "Samantha", "Daniel", "Karen", "Moira", "Tessa", "Fred"),
+}
+# Approximate prompt-cache warm window per agent, in minutes. Used only to phrase
+# idle reminders ("reply while the cache is still warm"); not an exact guarantee.
+# Claude's ephemeral prompt cache defaults to ~5 min; OpenAI/Codex prefix cache
+# typically survives ~5-10 min of inactivity.
+CACHE_WARM_MINUTES: dict[str, int] = {"claude-code": 5, "codex": 10}
+DEFAULT_CACHE_WARM_MINUTES = 5
+
+
+def cache_warm_minutes(agent_name: str | None) -> int:
+    return CACHE_WARM_MINUTES.get((agent_name or "").lower(), DEFAULT_CACHE_WARM_MINUTES)
 DEFAULT_SUMMARY_TEXT_INPUT_PRICE_PER_MILLION_TOKENS_USD = 0.20
 DEFAULT_SUMMARY_CACHED_INPUT_PRICE_PER_MILLION_TOKENS_USD = 0.02
 DEFAULT_SUMMARY_TEXT_OUTPUT_PRICE_PER_MILLION_TOKENS_USD = 1.25
@@ -39,7 +59,7 @@ Final assistant update:
 {message}
 """
 DEFAULT_SUMMARY_CONFIG: dict[str, str | int | float | bool] = {
-    "enabled": False,
+    "enabled": True,
     "provider": "openai",
     "model": DEFAULT_SUMMARY_MODEL,
     "privacy_level": "full_last_message",
@@ -62,7 +82,7 @@ database_path = "{database_path}"
 poll_interval_ms = 500
 
 [summary]
-enabled = false
+enabled = true
 provider = "openai"
 model = "gpt-5.4-nano"
 privacy_level = "full_last_message"
@@ -94,6 +114,7 @@ attention_required = "{agent} in {project} needs attention{reason_clause}."
 completed = "Session {project} is fully complete."
 completed_with_summary = "Session {project} is fully complete. Summary: {summary}."
 handled = "Event in {project} was handled."
+idle_reminder = "Just a reminder: {project} is done and waiting for your reply — within about {minutes} minutes, while {agent}'s cache is still warm."
 grouped_prefix = "Updates: {items}."
 grouped_many = "{count} sessions: {summary}."
 grouped_failed_fragment = "{project} failed"
@@ -157,6 +178,7 @@ DEFAULT_MESSAGE_TEMPLATES: dict[str, dict[str, str]] = {
         "completed": "Session {project} is fully complete.",
         "completed_with_summary": "Session {project} is fully complete. Summary: {summary}.",
         "handled": "Event in {project} was handled.",
+        "idle_reminder": "Just a reminder: {project} is done and waiting for your reply — within about {minutes} minutes, while {agent}'s cache is still warm.",
         "grouped_prefix": "Updates: {items}.",
         "grouped_many": "{count} sessions: {summary}.",
         "grouped_failed_fragment": "{project} failed",
@@ -192,7 +214,7 @@ class AgentVoiceConfig:
     voice_api_key_keychain_account: str = "openai"
     voice_instructions: str = "Speak naturally, calmly, and briefly. This is a short developer notification."
     voice_timeout_seconds: int = 15
-    summary_enabled: bool = False
+    summary_enabled: bool = True
     summary_provider: str = "openai"
     summary_model: str = DEFAULT_SUMMARY_MODEL
     summary_privacy_level: str = "full_last_message"
@@ -206,6 +228,11 @@ class AgentVoiceConfig:
     message_templates: dict[str, dict[str, str]] = field(default_factory=lambda: copy_message_templates(DEFAULT_MESSAGE_TEMPLATES))
     desktop_enabled: bool = True
     terminal_enabled: bool = True
+    notify_task_finished: bool = True
+    notify_permission_needed: bool = True
+    notify_input_needed: bool = True
+    notify_task_failed: bool = True
+    notify_subagent_finished: bool = False
     min_seconds_between_voice_messages: int = 8
     grouping_window_seconds: int = 20
     max_events_per_minute: int = 6
@@ -232,6 +259,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AgentVoiceConfig:
     desktop = data.get("desktop", {})
     terminal = data.get("terminal", {})
     limits = data.get("limits", {})
+    events = data.get("events", {})
 
     voice_estimated_cost_per_minute_usd = float(
         voice.get("estimated_cost_per_minute_usd", DEFAULT_TTS_ESTIMATED_COST_PER_MINUTE_USD)
@@ -280,7 +308,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AgentVoiceConfig:
             "Speak naturally, calmly, and briefly. This is a short developer notification.",
         ),
         voice_timeout_seconds=int(voice.get("timeout_seconds", 15)),
-        summary_enabled=bool(summary.get("enabled", False)),
+        summary_enabled=bool(summary.get("enabled", True)),
         summary_provider=normalize_summary_provider(summary.get("provider", "openai")),
         summary_model=summary.get("model", DEFAULT_SUMMARY_MODEL),
         summary_privacy_level=normalize_summary_privacy_level(summary.get("privacy_level", "full_last_message")),
@@ -309,6 +337,11 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AgentVoiceConfig:
         message_templates=load_message_templates(data.get("messages", {})),
         desktop_enabled=bool(desktop.get("enabled", True)),
         terminal_enabled=bool(terminal.get("enabled", True)),
+        notify_task_finished=bool(events.get("task_finished", True)),
+        notify_permission_needed=bool(events.get("permission_needed", True)),
+        notify_input_needed=bool(events.get("input_needed", True)),
+        notify_task_failed=bool(events.get("task_failed", True)),
+        notify_subagent_finished=bool(events.get("subagent_finished", False)),
         min_seconds_between_voice_messages=int(limits.get("min_seconds_between_voice_messages", 8)),
         grouping_window_seconds=int(limits.get("grouping_window_seconds", 20)),
         max_events_per_minute=int(limits.get("max_events_per_minute", 6)),
@@ -541,6 +574,43 @@ def set_voice_config(
     if api_key_env is not None:
         values["api_key_env"] = api_key_env
     return set_config_section_values(path, "voice", values)
+
+
+def set_summary_config(
+    path: str | os.PathLike[str] | None,
+    *,
+    enabled: bool | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+) -> Path:
+    values: dict[str, str | int | float | bool] = {}
+    if enabled is not None:
+        values["enabled"] = bool(enabled)
+    if provider is not None:
+        values["provider"] = normalize_summary_provider(provider)
+    if model is not None:
+        values["model"] = model
+    return set_config_section_values(path, "summary", values)
+
+
+def set_events_config(
+    path: str | os.PathLike[str] | None,
+    **flags: bool,
+) -> Path:
+    allowed = {
+        "task_finished",
+        "permission_needed",
+        "input_needed",
+        "task_failed",
+        "subagent_finished",
+    }
+    values: dict[str, str | int | float | bool] = {}
+    for key, value in flags.items():
+        if key not in allowed:
+            raise ValueError(f"Unknown event flag '{key}'")
+        if value is not None:
+            values[key] = bool(value)
+    return set_config_section_values(path, "events", values)
 
 
 def set_config_section_values(

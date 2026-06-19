@@ -46,7 +46,15 @@ def _python_method(func):
         return func
     return objc.python_method(func)
 
-from .config import load_config
+from .config import (
+    SUMMARY_MODEL_CHOICES,
+    TTS_MODEL_CHOICES,
+    VOICE_CHOICES,
+    load_config,
+    set_events_config,
+    set_summary_config,
+    set_voice_config,
+)
 from .runtime import (
     clear_voice_mute,
     clear_voice_pid,
@@ -372,6 +380,81 @@ class AgentVoiceMenuBar(NSObject):
         else:
             menu.addItem_(self._item("Summary: off (raw last message)", enabled=False))
 
+        self._add_picker_items(menu, config)
+
+    @_python_method
+    def _add_picker_items(self, menu: object, config) -> None:
+        voice_choices = self._choices_with_current(
+            VOICE_CHOICES.get(config.voice_backend, ()), config.voice_name
+        )
+        menu.addItem_(
+            self._submenu_item(
+                f"Voice: {config.voice_name or '—'}",
+                voice_choices,
+                config.voice_name,
+                "selectVoice:",
+            )
+        )
+
+        if config.voice_backend == "openai_tts":
+            tts_choices = self._choices_with_current(TTS_MODEL_CHOICES, config.voice_model)
+            menu.addItem_(
+                self._submenu_item(
+                    f"TTS Model: {config.voice_model}",
+                    tts_choices,
+                    config.voice_model,
+                    "selectTtsModel:",
+                )
+            )
+
+        summary_choices = self._choices_with_current(SUMMARY_MODEL_CHOICES, config.summary_model)
+        menu.addItem_(
+            self._submenu_item(
+                f"Summary Model: {config.summary_model}",
+                summary_choices,
+                config.summary_model,
+                "selectSummaryModel:",
+                enabled=config.summary_enabled,
+            )
+        )
+
+        reminders_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Announce idle reminders", "toggleIdleReminders:", ""
+        )
+        reminders_item.setTarget_(self)
+        reminders_item.setState_(1 if config.notify_input_needed else 0)
+        menu.addItem_(reminders_item)
+
+    @_python_method
+    def _choices_with_current(self, choices: tuple[str, ...], current: str | None) -> list[str]:
+        result = list(choices)
+        if current and current not in result:
+            result.insert(0, current)
+        return result
+
+    @_python_method
+    def _submenu_item(
+        self,
+        title: str,
+        choices: list[str],
+        current: str | None,
+        action: str,
+        *,
+        enabled: bool = True,
+    ) -> object:
+        parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+        parent.setEnabled_(enabled)
+        submenu = NSMenu.alloc().init()
+        for choice in choices:
+            child = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(choice, action, "")
+            child.setTarget_(self)
+            child.setRepresentedObject_(choice)
+            child.setState_(1 if choice == current else 0)
+            child.setEnabled_(enabled)
+            submenu.addItem_(child)
+        parent.setSubmenu_(submenu)
+        return parent
+
     @_python_method
     def _read_last_voice_channel(self, config) -> str | None:
         try:
@@ -450,6 +533,48 @@ class AgentVoiceMenuBar(NSObject):
         pid = stop_daemon(self._config())
         self._log(f"Stop Daemon clicked; pid={pid or '-'}")
         self.refresh()
+
+    def selectVoice_(self, sender) -> None:
+        voice = str(sender.representedObject())
+        config = self._config()
+        set_voice_config(config.config_path, voice=voice)
+        self._restart_daemon_if_running()
+        self._log(f"Voice set to {voice}")
+        self.refresh()
+
+    def selectTtsModel_(self, sender) -> None:
+        model = str(sender.representedObject())
+        config = self._config()
+        set_voice_config(config.config_path, model=model)
+        self._restart_daemon_if_running()
+        self._log(f"TTS model set to {model}")
+        self.refresh()
+
+    def selectSummaryModel_(self, sender) -> None:
+        model = str(sender.representedObject())
+        config = self._config()
+        set_summary_config(config.config_path, model=model)
+        self._restart_daemon_if_running()
+        self._log(f"Summary model set to {model}")
+        self.refresh()
+
+    def toggleIdleReminders_(self, sender) -> None:
+        config = self._config()
+        new_value = not config.notify_input_needed
+        set_events_config(config.config_path, input_needed=new_value)
+        self._restart_daemon_if_running()
+        self._log(f"Idle reminders {'enabled' if new_value else 'disabled'}")
+        self.refresh()
+
+    @_python_method
+    def _restart_daemon_if_running(self) -> None:
+        config = self._config()
+        _, running = daemon_status(config)
+        if not running:
+            return
+        stop_daemon(config)
+        start_daemon(config)
+        self._log("Daemon restarted to apply config change")
 
     def openConfig_(self, sender) -> None:
         config = self._config()

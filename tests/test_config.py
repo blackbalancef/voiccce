@@ -2,7 +2,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_voice.config import load_config, set_config_language, set_voice_config, write_default_config
+from agent_voice.config import (
+    load_config,
+    set_config_language,
+    set_events_config,
+    set_summary_config,
+    set_voice_config,
+    write_default_config,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -45,6 +52,41 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.voice_audio_output_price_per_million_tokens_usd, 12.0)
             self.assertEqual(config.voice_audio_tokens_per_second, 21.25)
             self.assertEqual(config.voice_instructions, "Speak calmly.")
+
+    def test_summary_is_enabled_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            config = load_config(config_path)
+            self.assertTrue(config.summary_enabled)
+
+    def test_set_summary_config_updates_model_and_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+
+            set_summary_config(config_path, enabled=False, model="gpt-4o-mini")
+            config = load_config(config_path)
+
+            self.assertFalse(config.summary_enabled)
+            self.assertEqual(config.summary_model, "gpt-4o-mini")
+
+            set_summary_config(config_path, enabled=True)
+            config = load_config(config_path)
+            self.assertTrue(config.summary_enabled)
+            self.assertEqual(config.summary_model, "gpt-4o-mini")
+
+    def test_set_events_config_toggles_input_needed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+
+            set_events_config(config_path, input_needed=False)
+            config = load_config(config_path)
+            self.assertFalse(config.notify_input_needed)
+            self.assertTrue(config.notify_task_finished)
+
+            set_events_config(config_path, input_needed=True)
+            config = load_config(config_path)
+            self.assertTrue(config.notify_input_needed)
 
     def test_load_config_reads_custom_message_templates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -11,7 +11,7 @@ from .delivery import DeliveryRouter
 from .intelligence.fallback import build_grouped_message
 from .intelligence.pipeline_log import log_summary_pipeline
 from .intelligence.summarizer import summarize_notification
-from .models import NotificationCategory, now_ts, stable_hash
+from .models import EventType, NotificationCategory, now_ts, stable_hash
 from .session_state import NotificationCandidate, SessionStateManager
 
 
@@ -46,6 +46,9 @@ def process_once(
     processed_keys: list[str] = []
 
     for event in events:
+        if not _event_type_enabled(config, event.event_type):
+            processed_keys.append(event.event_key)
+            continue
         candidate = manager.apply_event(event, now=current_time)
         if candidate:
             candidates_by_session[candidate.session_id] = candidate
@@ -223,6 +226,20 @@ def process_once(
         notifications_created=notifications_created,
         notifications_delivered=notifications_delivered,
     )
+
+
+def _event_type_enabled(config: AgentVoiceConfig, event_type: EventType) -> bool:
+    if event_type in {EventType.TASK_FINISHED, EventType.LONG_RUNNING_FINISHED}:
+        return config.notify_task_finished
+    if event_type == EventType.SUBAGENT_FINISHED:
+        return config.notify_subagent_finished
+    if event_type == EventType.PERMISSION_NEEDED:
+        return config.notify_permission_needed
+    if event_type in {EventType.INPUT_NEEDED, EventType.SESSION_IDLE}:
+        return config.notify_input_needed
+    if event_type in {EventType.TASK_FAILED, EventType.TOOL_FAILED}:
+        return config.notify_task_failed
+    return True
 
 
 def _last_voice_delivered_at(conn: sqlite3.Connection) -> int | None:

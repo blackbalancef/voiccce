@@ -263,6 +263,73 @@ class DaemonTests(unittest.TestCase):
             self.assertEqual(row["audio_token_count_method"], "tiktoken:o200k_base")
             conn.close()
 
+    def test_idle_notification_after_completion_becomes_reminder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path)
+
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="finished",
+                    agent_name="codex",
+                    event_type=EventType.TASK_FINISHED,
+                    project_name="api",
+                    session_id="s1",
+                ),
+            )
+            process_once(conn, config, deliver=False, current_time=100)
+
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="idle",
+                    agent_name="codex",
+                    event_type=EventType.INPUT_NEEDED,
+                    project_name="api",
+                    session_id="s1",
+                    ask_summary="Here is the full result I already produced.",
+                ),
+            )
+            process_once(conn, config, deliver=False, current_time=110)
+
+            rows = conn.execute("SELECT message FROM notifications ORDER BY id").fetchall()
+            self.assertEqual(len(rows), 2)
+            reminder = rows[-1]["message"]
+            self.assertIn("reminder", reminder.lower())
+            self.assertIn("10 minutes", reminder)  # codex cache window
+            self.assertNotIn("full result I already produced", reminder)
+            conn.close()
+
+    def test_input_needed_is_gated_when_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                notify_input_needed=False,
+            )
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="idle",
+                    agent_name="claude-code",
+                    event_type=EventType.INPUT_NEEDED,
+                    project_name="api",
+                    session_id="s1",
+                ),
+            )
+
+            result = process_once(conn, config, deliver=False, current_time=100)
+
+            self.assertEqual(result.processed_events, 1)
+            self.assertEqual(result.notifications_created, 0)
+            conn.close()
+
     def test_voice_is_throttled_within_min_seconds_between_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/events.sqlite3"
