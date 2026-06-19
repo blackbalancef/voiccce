@@ -12,6 +12,7 @@ from pathlib import Path
 from agent_voice.config import DEFAULT_CONFIG_PATH, write_default_config
 from agent_voice.db import connect, init_db
 from agent_voice.config import load_config
+from agent_voice.installer import verify_wrapper_imports
 
 
 PERSONAL_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
@@ -45,6 +46,7 @@ def install_claude_code_personal(
     config_path: Path = DEFAULT_CONFIG_PATH,
     wrapper_path: Path = WRAPPER_PATH,
     python_executable: str | Path | None = None,
+    verify: bool = False,
 ) -> ClaudeInstallResult:
     repo_root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
     config_path = config_path.expanduser().resolve()
@@ -61,6 +63,8 @@ def install_claude_code_personal(
         conn.close()
 
     _write_wrapper(wrapper_path, repo_root, config_path, python_executable)
+    if verify:
+        verify_wrapper_imports(python_executable, repo_root)
     settings = _read_settings(settings_path)
     backup_path = _backup_settings(settings_path)
     settings.setdefault("hooks", {})

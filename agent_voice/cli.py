@@ -23,6 +23,7 @@ from .db import connect, init_db
 from .delivery import DeliveryRouter
 from .hooks.claude_event_collector import read_event_from_stdin as read_claude_event_from_stdin
 from .hooks.codex_event_collector import read_event_from_stdin as read_codex_event_from_stdin
+from .installer import WrapperImportError
 from .installer.claude_code import install_claude_code_personal
 from .installer.codex import install_codex_personal
 from .models import EventType, NormalizedEvent
@@ -210,8 +211,15 @@ def _codex_install_kwargs(args: argparse.Namespace) -> dict[str, Path]:
 
 
 def cmd_install(args: argparse.Namespace) -> None:
+    try:
+        _cmd_install(args)
+    except WrapperImportError as exc:
+        raise SystemExit(str(exc))
+
+
+def _cmd_install(args: argparse.Namespace) -> None:
     if args.target == "claude-code":
-        result = install_claude_code_personal(**_claude_install_kwargs(args))
+        result = install_claude_code_personal(verify=True, **_claude_install_kwargs(args))
         print(f"Claude Code personal settings: {result.settings_path}")
         print(f"Backup: {result.backup_path}")
         print(f"Hook wrapper: {result.wrapper_path}")
@@ -221,7 +229,7 @@ def cmd_install(args: argparse.Namespace) -> None:
         return
 
     if args.target == "codex":
-        result = install_codex_personal(**_codex_install_kwargs(args))
+        result = install_codex_personal(verify=True, **_codex_install_kwargs(args))
         print(f"Codex hooks: {result.hooks_path}")
         print(f"Backup: {result.backup_path}")
         print(f"Hook wrapper: {result.wrapper_path}")
@@ -264,6 +272,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             "Claude settings.json",
             install_claude_code_personal,
             config_path=config_path,
+            verify=True,
             **_claude_install_kwargs(args),
         )
         print(f"✓ Claude Code hooks → {result.settings_path}")
@@ -273,6 +282,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             "Codex hooks.json",
             install_codex_personal,
             config_path=config_path,
+            verify=True,
             **_codex_install_kwargs(args),
         )
         print(f"✓ Codex hooks → {result.hooks_path}")
@@ -309,6 +319,8 @@ def _setup_install(label: str, install: Callable[..., _InstallResult], **kwargs:
             f"Could not parse your existing {label} (invalid JSON): {exc}. "
             "Fix or remove the file, then re-run `agent-chime setup`."
         )
+    except WrapperImportError as exc:
+        raise SystemExit(str(exc))
     except OSError as exc:
         raise SystemExit(f"Could not update your {label}: {exc}.")
 

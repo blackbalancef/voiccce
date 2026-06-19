@@ -11,6 +11,7 @@ from pathlib import Path
 
 from agent_voice.config import DEFAULT_CONFIG_PATH, load_config, write_default_config
 from agent_voice.db import connect, init_db
+from agent_voice.installer import verify_wrapper_imports
 
 
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
@@ -43,6 +44,7 @@ def install_codex_personal(
     config_path: Path = DEFAULT_CONFIG_PATH,
     wrapper_path: Path = WRAPPER_PATH,
     python_executable: str | Path | None = None,
+    verify: bool = False,
 ) -> CodexInstallResult:
     repo_root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
     config_path = config_path.expanduser().resolve()
@@ -60,6 +62,8 @@ def install_codex_personal(
         conn.close()
 
     _write_wrapper(wrapper_path, repo_root, config_path, python_executable)
+    if verify:
+        verify_wrapper_imports(python_executable, repo_root)
     hooks_config = _read_hooks(hooks_path)
     backup_path = _backup_hooks(hooks_path)
     hooks = hooks_config.setdefault("hooks", {})

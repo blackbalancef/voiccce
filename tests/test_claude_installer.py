@@ -1,8 +1,10 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from agent_voice.installer import WrapperImportError
 from agent_voice.installer.claude_code import MARKER, install_claude_code_personal
 
 
@@ -65,6 +67,32 @@ class ClaudeInstallerTests(unittest.TestCase):
             python_executable = (root / "venv" / "bin" / "python").resolve()
             self.assertIn(f"PYTHON_BIN={python_executable}", wrapper)
             self.assertNotIn("/usr/bin/env python3 -m agent_voice", wrapper)
+
+    def test_verify_raises_when_interpreter_cannot_import(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(WrapperImportError):
+                install_claude_code_personal(
+                    repo_root=root,  # empty dir → agent_voice not importable
+                    settings_path=root / "settings.json",
+                    config_path=root / "config.toml",
+                    wrapper_path=root / "bin" / "hook",
+                    python_executable=sys.executable,
+                    verify=True,
+                )
+
+    def test_verify_passes_for_valid_install(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = install_claude_code_personal(
+                repo_root=Path.cwd(),  # repo root has the agent_voice package
+                settings_path=root / "settings.json",
+                config_path=root / "config.toml",
+                wrapper_path=root / "bin" / "hook",
+                python_executable=sys.executable,
+                verify=True,
+            )
+            self.assertTrue(result.wrapper_path.exists())
 
 
 if __name__ == "__main__":
