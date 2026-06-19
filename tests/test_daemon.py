@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from agent_voice.config import AgentVoiceConfig
@@ -17,7 +18,7 @@ class DaemonTests(unittest.TestCase):
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(database_path=db_path)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path)
             enqueue_event(
                 conn,
                 NormalizedEvent.build(
@@ -54,7 +55,7 @@ class DaemonTests(unittest.TestCase):
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(database_path=db_path)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path)
             enqueue_event(
                 conn,
                 NormalizedEvent.build(
@@ -91,7 +92,7 @@ class DaemonTests(unittest.TestCase):
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(database_path=db_path)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path)
             enqueue_event(
                 conn,
                 NormalizedEvent.build(
@@ -128,7 +129,7 @@ class DaemonTests(unittest.TestCase):
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(database_path=db_path)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path)
             enqueue_event(
                 conn,
                 NormalizedEvent.build(
@@ -169,7 +170,7 @@ class DaemonTests(unittest.TestCase):
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(database_path=db_path, duplicate_cooldown_seconds=300)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path, duplicate_cooldown_seconds=300)
             enqueue_event(
                 conn,
                 NormalizedEvent.build(
@@ -208,7 +209,7 @@ class DaemonTests(unittest.TestCase):
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(database_path=db_path)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path)
             enqueue_event(
                 conn,
                 NormalizedEvent.build(
@@ -262,12 +263,58 @@ class DaemonTests(unittest.TestCase):
             self.assertEqual(row["audio_token_count_method"], "tiktoken:o200k_base")
             conn.close()
 
+    def test_voice_is_throttled_within_min_seconds_between_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path, min_seconds_between_voice_messages=8)
+            seen_voice_enabled: list[bool] = []
+
+            class FakeDeliveryRouter:
+                def __init__(self, config, *, terminal_only: bool = False) -> None:
+                    seen_voice_enabled.append(config.voice_enabled)
+
+                def deliver(self, message: str) -> list[DeliveryResult]:
+                    if seen_voice_enabled[-1]:
+                        return [DeliveryResult(channel="openai_tts", delivered=True, spoken=True, audio_generated=True)]
+                    return [DeliveryResult(channel="macos_notification", delivered=True)]
+
+            def enqueue(event_key: str) -> None:
+                enqueue_event(
+                    conn,
+                    NormalizedEvent.build(
+                        event_key=event_key,
+                        agent_name="codex",
+                        event_type=EventType.TASK_FINISHED,
+                        project_name="api",
+                        session_id=event_key,
+                    ),
+                )
+
+            with patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter):
+                enqueue("first")
+                process_once(conn, config, deliver=True, current_time=100)
+                enqueue("second")
+                process_once(conn, config, deliver=True, current_time=105)
+                enqueue("third")
+                process_once(conn, config, deliver=True, current_time=120)
+
+            # First spoken; second suppressed (within 8s); third allowed again (20s later).
+            self.assertEqual(seen_voice_enabled, [True, False, True])
+            rows = conn.execute("SELECT channel, spoken FROM notifications ORDER BY id").fetchall()
+            self.assertEqual(rows[0]["channel"], "openai_tts")
+            self.assertEqual(rows[1]["channel"], "macos_notification")
+            self.assertEqual(rows[1]["spoken"], 0)
+            self.assertEqual(rows[2]["channel"], "openai_tts")
+            conn.close()
+
     def test_completed_notification_is_summarized_before_delivery(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(database_path=db_path, summary_enabled=True)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path, summary_enabled=True)
             enqueue_event(
                 conn,
                 NormalizedEvent.build(
@@ -307,6 +354,89 @@ class DaemonTests(unittest.TestCase):
             event_row = conn.execute("SELECT summary_source_text FROM events WHERE event_key = 'finished'").fetchone()
             self.assertIsNone(event_row["summary_source_text"])
             conn.close()
+
+    def test_pipeline_log_records_source_and_spoken_text(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                summary_enabled=True,
+            )
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="finished",
+                    agent_name="codex",
+                    event_type=EventType.TASK_FINISHED,
+                    project_name="api",
+                    session_id="s1",
+                    summary_source_text="Full raw final message from the assistant.",
+                ),
+            )
+
+            class FakeDeliveryRouter:
+                def __init__(self, config, *, terminal_only: bool = False) -> None:
+                    pass
+
+                def deliver(self, message: str) -> list[DeliveryResult]:
+                    return [DeliveryResult(channel="terminal_log", delivered=True, spoken=False)]
+
+            def fake_summarize(config: AgentVoiceConfig, candidate) -> SummaryResult:
+                return SummaryResult(
+                    message="Done summarizing.",
+                    cost_usd=0.0001,
+                    prompt="PROMPT BODY",
+                    raw_text="Done summarizing",
+                )
+
+            with (
+                patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter),
+                patch("agent_voice.daemon.summarize_notification", fake_summarize),
+            ):
+                process_once(conn, config, deliver=True, current_time=100)
+            conn.close()
+
+            log_path = Path(tmp) / "summary.log"
+            self.assertTrue(log_path.exists())
+            record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+            self.assertEqual(record["source_text"], "Full raw final message from the assistant.")
+            self.assertEqual(record["prompt"], "PROMPT BODY")
+            self.assertEqual(record["gpt_raw_output"], "Done summarizing")
+            self.assertEqual(record["gpt_clean_output"], "Done summarizing.")
+            self.assertIn("Done summarizing.", record["spoken_text"])
+            self.assertTrue(record["gpt_used"])
+
+    def test_pipeline_log_marks_grouped_notifications(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path)
+            for key, session in (("a", "s1"), ("b", "s2")):
+                enqueue_event(
+                    conn,
+                    NormalizedEvent.build(
+                        event_key=key,
+                        agent_name="codex",
+                        event_type=EventType.TASK_FINISHED,
+                        project_name=key,
+                        session_id=session,
+                    ),
+                )
+
+            process_once(conn, config, deliver=False, current_time=100)
+            conn.close()
+
+            record = json.loads((Path(tmp) / "summary.log").read_text(encoding="utf-8").splitlines()[-1])
+            self.assertTrue(record["grouped"])
+            self.assertFalse(record["gpt_used"])
 
 
 if __name__ == "__main__":

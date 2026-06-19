@@ -87,6 +87,9 @@ class SummarizerTests(unittest.TestCase):
             result = summarize_notification(config, candidate)
 
         self.assertEqual(result.message, "Voice summaries are ready.")
+        self.assertEqual(result.raw_text, "Voice summaries are ready")
+        self.assertIn("Say this for api:", result.prompt)
+        self.assertIn("START", result.prompt)
         self.assertEqual(result.request_id, "req_123")
         self.assertEqual(result.input_text_tokens, 100)
         self.assertEqual(result.cached_input_text_tokens, 20)

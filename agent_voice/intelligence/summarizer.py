@@ -22,6 +22,8 @@ class SummaryResult:
     request_id: str | None = None
     client_request_id: str | None = None
     error: str | None = None
+    prompt: str | None = None
+    raw_text: str | None = None
 
 
 def summarize_notification(config: AgentVoiceConfig, candidate: object) -> SummaryResult:
@@ -64,11 +66,13 @@ def summarize_notification(config: AgentVoiceConfig, candidate: object) -> Summa
         return SummaryResult(
             client_request_id=client_request_id,
             error=f"HTTP {exc.code}: {body[:300]}",
+            prompt=prompt,
         )
     except Exception as exc:  # pragma: no cover - network/platform dependent
-        return SummaryResult(client_request_id=client_request_id, error=str(exc))
+        return SummaryResult(client_request_id=client_request_id, error=str(exc), prompt=prompt)
 
-    message = _clean_model_text(_extract_response_text(data))
+    raw_text = _extract_response_text(data)
+    message = _clean_model_text(raw_text)
     usage = data.get("usage") if isinstance(data, dict) else None
     input_tokens = _usage_int(usage, "input_tokens", "prompt_tokens")
     output_tokens = _usage_int(usage, "output_tokens", "completion_tokens")
@@ -82,6 +86,8 @@ def summarize_notification(config: AgentVoiceConfig, candidate: object) -> Summa
         output_text_tokens=output_tokens,
         request_id=request_id,
         client_request_id=client_request_id,
+        prompt=prompt,
+        raw_text=raw_text,
     )
 
 

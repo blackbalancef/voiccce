@@ -26,12 +26,12 @@ DEFAULT_SUMMARY_CACHED_INPUT_PRICE_PER_MILLION_TOKENS_USD = 0.02
 DEFAULT_SUMMARY_TEXT_OUTPUT_PRICE_PER_MILLION_TOKENS_USD = 1.25
 DEFAULT_SUMMARY_MAX_INPUT_CHARS = 6000
 DEFAULT_SUMMARY_PROMPT = """Rewrite the final assistant update into one natural spoken notification.
-Language: {language}
+Write in the same language as the final assistant update below.
 Project: {project}
 Agent: {agent}
 Status: {status}
 
-Keep only what the user needs to know now. Write no more than {max_words} words and finish the sentence naturally.
+Keep only what the user needs to know now. Write no more than {max_words} words, and always finish your sentence completely — never stop mid-thought or mid-word.
 Sound natural and varied, not like a status template. Do not mention internal paths, commands, or tests unless they are essential.
 Return only the text to speak.
 
@@ -44,7 +44,7 @@ DEFAULT_SUMMARY_CONFIG: dict[str, str | int | float | bool] = {
     "model": DEFAULT_SUMMARY_MODEL,
     "privacy_level": "full_last_message",
     "max_input_chars": DEFAULT_SUMMARY_MAX_INPUT_CHARS,
-    "max_words": 18,
+    "max_words": 40,
     "timeout_seconds": 5,
     "text_input_price_per_million_tokens_usd": DEFAULT_SUMMARY_TEXT_INPUT_PRICE_PER_MILLION_TOKENS_USD,
     "cached_input_price_per_million_tokens_usd": DEFAULT_SUMMARY_CACHED_INPUT_PRICE_PER_MILLION_TOKENS_USD,
@@ -67,19 +67,19 @@ provider = "openai"
 model = "gpt-5.4-nano"
 privacy_level = "full_last_message"
 max_input_chars = 6000
-max_words = 18
+max_words = 40
 timeout_seconds = 5
 text_input_price_per_million_tokens_usd = 0.20
 cached_input_price_per_million_tokens_usd = 0.02
 text_output_price_per_million_tokens_usd = 1.25
 prompt = '''
 Rewrite the final assistant update into one natural spoken notification.
-Language: {language}
+Write in the same language as the final assistant update below.
 Project: {project}
 Agent: {agent}
 Status: {status}
 
-Keep only what the user needs to know now. Write no more than {max_words} words and finish the sentence naturally.
+Keep only what the user needs to know now. Write no more than {max_words} words, and always finish your sentence completely — never stop mid-thought or mid-word.
 Sound natural and varied, not like a status template. Do not mention internal paths, commands, or tests unless they are essential.
 Return only the text to speak.
 
@@ -197,7 +197,7 @@ class AgentVoiceConfig:
     summary_model: str = DEFAULT_SUMMARY_MODEL
     summary_privacy_level: str = "full_last_message"
     summary_max_input_chars: int = DEFAULT_SUMMARY_MAX_INPUT_CHARS
-    summary_max_words: int = 18
+    summary_max_words: int = 40
     summary_timeout_seconds: int = 5
     summary_prompt: str = DEFAULT_SUMMARY_PROMPT
     summary_text_input_price_per_million_tokens_usd: float = DEFAULT_SUMMARY_TEXT_INPUT_PRICE_PER_MILLION_TOKENS_USD
@@ -285,7 +285,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AgentVoiceConfig:
         summary_model=summary.get("model", DEFAULT_SUMMARY_MODEL),
         summary_privacy_level=normalize_summary_privacy_level(summary.get("privacy_level", "full_last_message")),
         summary_max_input_chars=max(200, int(summary.get("max_input_chars", DEFAULT_SUMMARY_MAX_INPUT_CHARS))),
-        summary_max_words=max(1, int(summary.get("max_words", 18))),
+        summary_max_words=max(1, int(summary.get("max_words", 40))),
         summary_timeout_seconds=max(1, int(summary.get("timeout_seconds", 5))),
         summary_prompt=summary.get("prompt", DEFAULT_SUMMARY_PROMPT),
         summary_text_input_price_per_million_tokens_usd=float(

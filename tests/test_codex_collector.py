@@ -1,10 +1,48 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from agent_voice.hooks.codex_event_collector import normalize_codex_event
 from agent_voice.models import EventType
 
 
 class CodexCollectorTests(unittest.TestCase):
+    def test_stop_event_prefers_full_transcript_over_truncated_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transcript = Path(tmp) / "transcript.jsonl"
+            full = "The complete final Codex answer with all details kept intact for the summary."
+            transcript.write_text(
+                json.dumps({"role": "assistant", "content": full}) + "\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "cwd": "/tmp/agent-chime",
+                "hook_event_name": "Stop",
+                "transcript_path": str(transcript),
+                "last_assistant_message": "clipped preview...",
+            }
+
+            event = normalize_codex_event(payload)
+
+        self.assertEqual(event.summary_source_text, full)
+
+    def test_stop_event_falls_back_to_payload_when_transcript_missing(self) -> None:
+        payload = {
+            "session_id": "session-1",
+            "turn_id": "turn-1",
+            "cwd": "/tmp/agent-chime",
+            "hook_event_name": "Stop",
+            "transcript_path": "/nonexistent/transcript.jsonl",
+            "last_assistant_message": "codex payload message",
+        }
+
+        event = normalize_codex_event(payload)
+
+        self.assertEqual(event.summary_source_text, "codex payload message")
+
     def test_permission_request_summarizes_and_sanitizes_tool_input(self) -> None:
         event = normalize_codex_event(
             {

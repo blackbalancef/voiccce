@@ -9,6 +9,7 @@ from .config import AgentVoiceConfig
 from .db import connect, fetch_pending_events, init_db, mark_events_processed
 from .delivery import DeliveryRouter
 from .intelligence.fallback import build_grouped_message
+from .intelligence.pipeline_log import log_summary_pipeline
 from .intelligence.summarizer import summarize_notification
 from .models import NotificationCategory, now_ts, stable_hash
 from .session_state import NotificationCandidate, SessionStateManager
@@ -57,9 +58,28 @@ def process_once(
     if candidates_by_session:
         candidates = list(candidates_by_session.values())
         candidates.sort(key=lambda candidate: (candidate.priority, candidate.created_at))
+
+        voice_allowed = config.voice_enabled
+        if deliver and not terminal_only and voice_allowed and config.min_seconds_between_voice_messages > 0:
+            last_voice_at = _last_voice_delivered_at(conn)
+            if (
+                last_voice_at is not None
+                and current_time - last_voice_at < config.min_seconds_between_voice_messages
+            ):
+                voice_allowed = False
+
         summary_cost_usd = 0.0
-        if deliver and not terminal_only and config.voice_enabled and len(candidates) == 1:
-            summary_result = summarize_notification(config, candidates[0])
+        summary_result = None
+        primary = candidates[0]
+        # Honor the privacy choice: only persist the full last assistant message to the
+        # pipeline log when the user opted into full_last_message. Otherwise log the
+        # already-short notification text, mirroring summarizer._source_text.
+        if config.summary_privacy_level == "full_last_message":
+            source_text = primary.summary_source_text or primary.message
+        else:
+            source_text = primary.message
+        if deliver and not terminal_only and voice_allowed and len(candidates) == 1:
+            summary_result = summarize_notification(config, primary)
             summary_cost_usd = summary_result.cost_usd
             if summary_result.message:
                 candidates[0] = replace(candidates[0], message=summary_result.message)
@@ -92,7 +112,8 @@ def process_once(
         error = None
 
         if deliver:
-            router = DeliveryRouter(config, terminal_only=terminal_only)
+            delivery_config = config if voice_allowed else replace(config, voice_enabled=False)
+            router = DeliveryRouter(delivery_config, terminal_only=terminal_only)
             results = router.deliver(message)
             audio_generated = any(result.audio_generated for result in results)
             audio_duration_seconds = sum(result.audio_duration_seconds for result in results)
@@ -174,12 +195,52 @@ def process_once(
         )
         notifications_created = 1
 
+        log_summary_pipeline(
+            config,
+            {
+                "ts": current_time,
+                "project": primary.project_name,
+                "status": getattr(primary.status, "value", str(primary.status)),
+                "grouped": len(candidates) > 1,
+                "gpt_enabled": bool(config.summary_enabled and config.summary_provider == "openai"),
+                "gpt_used": bool(summary_result and summary_result.message),
+                "gpt_error": summary_result.error if summary_result else None,
+                "source_text": source_text,
+                "prompt": summary_result.prompt if summary_result else None,
+                "gpt_raw_output": summary_result.raw_text if summary_result else None,
+                "gpt_clean_output": summary_result.message if summary_result else None,
+                "spoken_text": message,
+                "channel": channel,
+                "spoken": bool(spoken),
+                "summary_cost_usd": summary_cost_usd,
+                "delivery_error": error,
+            },
+        )
+
     conn.commit()
     return ProcessResult(
         processed_events=len(processed_keys),
         notifications_created=notifications_created,
         notifications_delivered=notifications_delivered,
     )
+
+
+def _last_voice_delivered_at(conn: sqlite3.Connection) -> int | None:
+    """Return the delivery timestamp of the most recent spoken notification."""
+    row = conn.execute(
+        """
+        SELECT delivered_at FROM notifications
+        WHERE channel IN ('openai_tts', 'macos_say')
+          AND spoken = 1
+          AND delivered_at IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    value = row["delivered_at"] if isinstance(row, sqlite3.Row) else row[0]
+    return int(value) if value is not None else None
 
 
 def run_daemon(config: AgentVoiceConfig, *, once: bool = False, deliver: bool = True, terminal_only: bool = False) -> None:
