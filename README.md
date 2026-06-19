@@ -2,212 +2,190 @@
 
 Session-aware voice notifications for AI coding agents.
 
-Agent Chime watches local agent lifecycle hooks and says short, useful notifications such as:
+Agent Chime watches local agent lifecycle hooks (Claude Code and Codex) and speaks short, useful notifications such as:
 
 - "Claude Code in my-app needs attention: approve npm install."
 - "Session my-app is fully complete."
 - "Claude Code in api failed: tests did not pass."
 
-The project is local-first: hooks write to a local SQLite queue, the daemon groups and deduplicates events, and delivery happens through macOS voice, desktop notifications, terminal logs, or optional OpenAI TTS.
-
-## Features
-
-- Claude Code hooks for `Stop`, `Notification`, `PermissionRequest`, `StopFailure`, and `SubagentStop`.
-- Codex hooks for `Stop`, `PermissionRequest`, and `SubagentStop`.
-- Deduplication, grouping, and stale/conflicting notification suppression.
-- English notification text with configurable templates.
-- macOS `say` by default, with optional OpenAI `gpt-4o-mini-tts`.
-- Local config, SQLite queue, and logs under `~/.agent-chime`.
-- API keys from environment variables, `~/.agent-chime/.env`, or macOS Keychain.
+It is local-first: hooks write to a local SQLite queue, a background daemon groups and deduplicates events, and delivery happens through OpenAI TTS (recommended), the local macOS voice, desktop notifications, or terminal logs. Everything it stores lives under `~/.agent-chime` (config, queue, logs).
 
 ## Requirements
 
-- macOS for voice playback and desktop notifications.
-- Python 3.12+.
-- `pipx` for the recommended install flow.
-- Claude Code, if you want Claude hook integration.
-- Codex CLI, if you want Codex hook integration.
+- macOS (for voice playback and desktop notifications).
+- Python 3.12+ — check with `python3 --version`; if it's older, `brew install python@3.12`.
+- `pipx` — install with `brew install pipx && pipx ensurepath`, then open a new terminal ([other ways to install pipx](https://pipx.pypa.io/stable/installation/)).
+- Claude Code and/or Codex CLI — whichever agents you want notifications for.
+- An OpenAI API key for the recommended voice ([get one here](https://platform.openai.com/api-keys)). You can skip it with `--local`, but the local macOS voice sounds noticeably worse.
 
-## Install
+## Quick start
 
-Recommended install from GitHub:
+Two steps: install the package, then run the one setup command.
 
 ```bash
+# 1. Install the package
 git clone https://github.com/blackbalancef/agent-chime.git
 cd agent-chime
-git pull --ff-only
 pipx install --force .
-agent-chime install
+agent-chime --help                   # sanity check — if "command not found", run `pipx ensurepath`, open a new terminal, retry
+
+# 2. Set up everything in one command
+agent-chime setup
 ```
 
-To update an existing checkout later:
+**Have an OpenAI API key?** (recommended — best voice) Run `agent-chime setup`. **No key?** Run `agent-chime setup --local` to use the built-in macOS voice (lower quality, works offline). Either way it is a single command.
+
+`agent-chime setup` walks you through the whole thing interactively:
+
+1. **Asks for your OpenAI API key** and saves it to the macOS Keychain.
+2. **Turns on OpenAI TTS** (voice `marin` by default).
+3. **Asks which agent to wire up** (`claude-code`, `codex`, or `both`) and installs the hooks.
+4. **Starts the background daemon.**
+5. **Sends a test notification** — you should hear it right away.
+
+```text
+$ agent-chime setup
+OpenAI API key: ********
+✓ OpenAI key saved to macOS Keychain
+✓ Voice backend: openai_tts (voice: marin)
+Wire hooks for? [claude-code/codex/both] (both): both
+✓ Claude Code hooks → ~/.claude/settings.json
+✓ Codex hooks → ~/.codex/hooks.json
+✓ Daemon started (pid 4123)
+✓ Test sent — you should hear it now.
+
+Done. Edit ~/.agent-chime/config.toml to customize voice, messages, and summaries.
+```
+
+That's it. Agent Chime now speaks when your agent needs attention, finishes, or fails.
+
+> Run it non-interactively by naming the agent up front, e.g. `agent-chime setup both` or `agent-chime setup claude-code`.
+>
+> **If your agent was already running** during setup, start a new session so it picks up the new hooks.
+>
+> **Codex only:** also open `/hooks` in Codex and **trust** the Agent Chime hooks (restart `codex app-server` if it was running). Details in [Codex](#codex).
+
+### No OpenAI key? Use the local voice
+
+```bash
+agent-chime setup --local
+```
+
+`--local` skips the API key and uses the built-in macOS `say` voice. It works offline with zero setup, but the quality is noticeably lower than OpenAI TTS — handy to try things out. To switch to OpenAI later, store a key first, then change the backend:
+
+```bash
+agent-chime secret set openai                              # paste your key
+agent-chime config --voice-backend openai_tts --voice marin
+agent-chime stop && agent-chime start
+```
+
+### Updating
 
 ```bash
 cd agent-chime
 git pull --ff-only
 pipx install --force .
-agent-chime stop
-agent-chime start
+agent-chime stop && agent-chime start
 ```
 
-For the optional macOS menu bar companion:
+## Customize
+
+Everything lives in one config file at `~/.agent-chime/config.toml`. Edit it, then restart the daemon:
 
 ```bash
-pipx inject agent-chime pyobjc-framework-Cocoa
-agent-chime menubar-start
+agent-chime stop && agent-chime start
 ```
 
-After the package is published to PyPI, the shorter install path will be:
+Common tweaks are also one-liners (each updates `config.toml` for you — no restart prompt, but restart to apply):
 
 ```bash
-pipx install agent-chime
+agent-chime config --voice cedar                 # pick a different OpenAI voice
+agent-chime config --voice-backend macos_say     # switch to the local macOS voice (lower quality, no key)
+agent-chime config --voice-backend openai_tts --voice marin   # switch back to OpenAI TTS (needs a stored key)
 ```
 
-The legacy `agent-voice` command remains available as a compatibility alias.
+Switching to OpenAI TTS only takes effect once a key is stored (see [Managing the OpenAI key](#managing-the-openai-key)); without one, delivery silently falls back to the local macOS voice. See [Configuration](#configuration) for every field.
 
-## Quick Start
+### Managing the OpenAI key
 
-Initialize local config and database:
+`agent-chime setup` stores the key in the macOS Keychain. Manage it with:
 
 ```bash
-agent-chime install
+agent-chime secret status openai
+agent-chime secret set openai        # paste a new key
+agent-chime secret delete openai
+agent-chime setup --reset-key        # re-prompt for a key even if one is already saved
 ```
 
-Optional: add an OpenAI API key for cloud TTS and GPT summaries:
+If you'd rather not use the Keychain, Agent Chime also reads the key from the `OPENAI_API_KEY` shell variable or from `~/.agent-chime/.env` (resolved in that order: shell env → `.env` → Keychain). A `.env` template lives at [`.env.example`](.env.example).
 
-```bash
-mkdir -p ~/.agent-chime
-printf 'OPENAI_API_KEY=%s\n' 'replace-with-your-openai-key' > ~/.agent-chime/.env
-chmod 600 ~/.agent-chime/.env
-```
+### GPT summaries (optional)
 
-Optional: switch voice delivery from local macOS `say` to OpenAI TTS:
-
-```bash
-agent-chime config \
-  --voice-backend openai_tts \
-  --voice marin \
-  --voice-speed 1.2 \
-  --voice-model gpt-4o-mini-tts \
-  --voice-format mp3 \
-  --voice-api-key-env OPENAI_API_KEY
-```
-
-Install hooks for your agent, then start the daemon:
-
-```bash
-agent-chime install codex
-# or: agent-chime install claude-code
-agent-chime start
-agent-chime status
-agent-chime test
-```
-
-User-facing settings live in files under `~/.agent-chime`. Edit
-`~/.agent-chime/config.toml` for message templates, voice backend, model,
-speed, and speaking instructions. Edit `~/.agent-chime/.env` for API keys.
-
-The built-in notification language is English:
+To rewrite completed-session notifications into a more natural sentence, enable summaries in `~/.agent-chime/config.toml`:
 
 ```toml
-[user]
-language = "en"
+[summary]
+enabled = true
+provider = "openai"
+model = "gpt-5.4-nano"                 # any chat/Responses-capable model your OpenAI account can use
+privacy_level = "full_last_message"   # or "metadata_only"
+max_input_chars = 6000
+max_words = 18
+timeout_seconds = 5
 ```
 
-Start or stop the background daemon:
+`full_last_message` sends the final assistant message to the summary model, then clears that transient text after processing; `metadata_only` summarizes the already-short notification text instead. The block also accepts a multi-line `prompt = '''…'''` (placeholders `{language}`, `{project}`, `{agent}`, `{status}`, `{max_words}`, `{message}`) and three `*_price_per_million_tokens_usd` fields used for the local spend estimate. Restart the daemon after editing.
+
+### Cost & accuracy
+
+Short OpenAI TTS notifications usually cost about `$0.0008–$0.0015` each on `gpt-4o-mini-tts`; cost depends mostly on generated audio duration. Local spend is shown by `agent-chime status` and in the menu bar as an **estimate**, because the speech endpoint returns audio rather than billing data. For closer token counts, install the optional tokenizer:
 
 ```bash
-agent-chime start
-agent-chime status
-agent-chime stop
-```
-
-Start or stop the menu bar companion:
-
-```bash
-agent-chime menubar-start
-agent-chime menubar-status
-agent-chime menubar-stop
+pipx inject agent-chime tiktoken
 ```
 
 ## Claude Code
 
-Install hooks into the default personal Claude Code config:
+`agent-chime setup` (or `agent-chime install claude-code`) writes hooks into your personal Claude config (`~/.claude/settings.json`) and backs up the existing file first. Installed hooks: `Stop`, `Notification`, `PermissionRequest`, `StopFailure`, `SubagentStop`.
+
+For a custom Claude config directory, pass it to either command:
 
 ```bash
-agent-chime install claude-code
-agent-chime start
-```
-
-If you run Claude with a custom config directory, for example:
-
-```bash
-alias claude-personal='CLAUDE_CONFIG_DIR=$HOME/.claude-personal claude'
-```
-
-install hooks into that directory:
-
-```bash
-agent-chime install claude-code --claude-config-dir ~/.claude-personal
-agent-chime start
-claude-personal
-```
-
-You can also target a settings file directly:
-
-```bash
+agent-chime setup --claude-config-dir ~/.claude-personal
+# or, hooks only:
 agent-chime install claude-code --settings-path ~/.claude-personal/settings.json
 ```
 
-The installer creates a backup next to the Claude `settings.json` file before changing hooks.
-
 ## Codex
 
-Install hooks into the default personal Codex config:
+`agent-chime setup` (or `agent-chime install codex`) writes hooks into your personal Codex config and backs up `hooks.json` first. Installed hooks: `Stop`, `PermissionRequest`, `SubagentStop`.
+
+For a custom `CODEX_HOME`:
 
 ```bash
-agent-chime install codex
-agent-chime start
-```
-
-If you run Codex with a custom `CODEX_HOME`, install hooks into that directory:
-
-```bash
-agent-chime install codex --codex-home ~/.codex-personal
-agent-chime start
+agent-chime setup --codex-home ~/.codex-personal
 CODEX_HOME=~/.codex-personal codex
 ```
 
-You can also target a hooks file directly:
+**After installing Codex hooks:** restart the Codex app or `codex app-server` if it was already running so it reloads the new hooks file. Codex requires newly added command hooks to be reviewed and trusted — open `/hooks` in Codex and trust the Agent Chime hooks before normal runs.
 
-```bash
-agent-chime install codex --hooks-path ~/.codex-personal/hooks.json
-```
+## Configuration
 
-The installer creates a backup next to `hooks.json` before changing hooks. If Codex app or `codex app-server` was already running, restart it so it reloads the new hooks file. Codex requires newly added command hooks to be reviewed and trusted; open `/hooks` in Codex and trust the Agent Chime hooks before normal runs.
-
-## File-Based Configuration
-
-`agent-chime install` creates `~/.agent-chime/config.toml`. Users can change
-voice settings and message templates directly in this file:
+The config file is `~/.agent-chime/config.toml`. Restart the daemon after editing (`agent-chime stop && agent-chime start`).
 
 ```toml
 [user]
-language = "en"
+language = "en"            # built-in notification language
 timezone = "Europe/Belgrade"
 
 [voice]
 enabled = true
-backend = "macos_say"
-voice = "Alex"
-rate = 185
-speed = 1.0
-model = "gpt-4o-mini-tts"
-format = "mp3"
-estimated_cost_per_minute_usd = 0.015
-text_input_price_per_million_tokens_usd = 0.60
-audio_output_price_per_million_tokens_usd = 12.00
-audio_tokens_per_second = 20.833333
+backend = "macos_say"      # `agent-chime setup` switches this to "openai_tts"
+voice = "Alex"             # macOS voice name; OpenAI voices look like "marin" or "cedar"
+rate = 185                 # macOS say speaking rate
+speed = 1.0                # OpenAI TTS speed, 0.25–4.0
+model = "gpt-4o-mini-tts"  # OpenAI TTS model
+format = "mp3"             # mp3, opus, aac, flac, wav, or pcm
 api_key_env = "OPENAI_API_KEY"
 api_key_keychain_service = "agent-chime"
 api_key_keychain_account = "openai"
@@ -215,154 +193,15 @@ instructions = "Speak naturally, calmly, and briefly. This is a short developer 
 timeout_seconds = 15
 ```
 
-Use these fields for common changes:
+The remaining `[voice]` fields tune only the **local spend estimate** shown in `agent-chime status` and the menu bar:
 
-- `backend`: `macos_say` for local macOS voice, or `openai_tts` for OpenAI TTS.
-- `voice`: macOS voice name for `macos_say`, or OpenAI TTS voice such as `marin`.
-- `rate`: macOS `say` speaking rate.
-- `speed`: OpenAI TTS speed, from `0.25` to `4.0`.
-- `model`: OpenAI TTS model, for example `gpt-4o-mini-tts`.
-- `format`: OpenAI audio format, such as `mp3`, `opus`, `aac`, `flac`, `wav`, or `pcm`.
-- `estimated_cost_per_minute_usd`: legacy fallback estimate used to derive `audio_tokens_per_second` when that field is absent.
-- `text_input_price_per_million_tokens_usd`: OpenAI TTS text input price used by local stats.
-- `audio_output_price_per_million_tokens_usd`: OpenAI TTS generated audio price used by local stats.
-- `audio_tokens_per_second`: estimated generated audio tokens per second. The default preserves the old `$0.015/min` audio estimate at `$12/1M` audio tokens.
-- `instructions`: OpenAI TTS speaking style prompt.
-- `api_key_env`: environment variable name read from `~/.agent-chime/.env` or the shell.
+- `estimated_cost_per_minute_usd` — legacy fallback used to derive `audio_tokens_per_second` when that field is absent.
+- `text_input_price_per_million_tokens_usd` / `audio_output_price_per_million_tokens_usd` — OpenAI TTS prices used by local stats.
+- `audio_tokens_per_second` — estimated generated audio tokens per second.
 
-Restart the daemon after editing `config.toml`:
+### Custom message templates
 
-```bash
-agent-chime stop
-agent-chime start
-```
-
-## OpenAI TTS
-
-The default backend is local macOS `say`. To use OpenAI TTS, put the key in
-`~/.agent-chime/.env`:
-
-```bash
-mkdir -p ~/.agent-chime
-printf 'OPENAI_API_KEY=%s\n' 'replace-with-your-openai-key' > ~/.agent-chime/.env
-chmod 600 ~/.agent-chime/.env
-```
-
-Then configure the voice backend:
-
-```bash
-agent-chime config \
-  --voice-backend openai_tts \
-  --voice marin \
-  --voice-speed 1.2 \
-  --voice-model gpt-4o-mini-tts \
-  --voice-format mp3 \
-  --voice-api-key-env OPENAI_API_KEY \
-  --voice-instructions "Speak naturally, calmly, and briefly."
-```
-
-Local audio spend is stored as an estimate because the speech endpoint returns
-audio data, not per-request billing metadata. For OpenAI TTS the daemon now
-stores the response `x-request-id`, a generated `X-Client-Request-Id`, estimated
-text input tokens for `input` plus `instructions`, estimated audio output tokens
-from generated duration, and separate input/output cost components. Install the
-optional tokenizer for closer local text counts:
-
-```bash
-pipx inject agent-chime tiktoken
-```
-
-Without `tiktoken`, Agent Chime falls back to a conservative local token
-heuristic. `audio_billed_cost_usd` is reserved for future Usage/Costs API
-reconciliation; current dashboard totals still display `audio_cost_usd` as
-estimated spend.
-
-Restart the daemon and send a test notification:
-
-```bash
-agent-chime stop
-agent-chime start
-agent-chime test
-```
-
-You can store the key in macOS Keychain instead:
-
-```bash
-agent-chime secret set openai
-agent-chime secret status openai
-```
-
-Current short notifications usually cost around `$0.0008-$0.0015` each on `gpt-4o-mini-tts`; exact cost depends mostly on generated audio duration.
-
-## GPT Summaries Before Voice
-
-By default, notifications use local fallback text. To make completed-session
-voice notifications more natural, enable OpenAI summarization:
-
-```toml
-[summary]
-enabled = true
-provider = "openai"
-model = "gpt-5.4-nano"
-privacy_level = "full_last_message"
-max_input_chars = 6000
-max_words = 18
-timeout_seconds = 5
-text_input_price_per_million_tokens_usd = 0.20
-cached_input_price_per_million_tokens_usd = 0.02
-text_output_price_per_million_tokens_usd = 1.25
-prompt = '''
-Rewrite the final assistant update into one natural spoken notification.
-Language: {language}
-Project: {project}
-Agent: {agent}
-Status: {status}
-
-Keep only what the user needs to know now. Write no more than {max_words} words and finish the sentence naturally.
-Sound natural and varied, not like a status template. Do not mention internal paths, commands, or tests unless they are essential.
-Return only the text to speak.
-
-Final assistant update:
-{message}
-'''
-```
-
-`full_last_message` sends the final assistant message for completed sessions to
-the summary model, then clears that transient text from the event row after the
-daemon processes it. Use `metadata_only` to summarize the already-short local
-notification text instead. `max_input_chars` caps the text sent to the cheap
-summary model by keeping the beginning and end of the final message, so large
-assistant reports do not become large summary requests. `max_words` tells the
-model how short the spoken notification should be; the daemon does not hard-cut
-the final spoken text, so the model can finish a coherent sentence. Summary
-token spend is estimated from the model response `usage` fields and appears in
-the CLI/menu bar dashboard as `Summaries`.
-
-## Menu Bar
-
-The optional macOS menu bar companion gives quick controls without opening a terminal:
-
-- Dashboard: estimated audio spend, generated audio time/count, summary spend, and listened report count.
-- `Stop Speaking`: stops the current `say` or `afplay` voice playback.
-- `Mute 10 min` and `Mute 1 hour`: disables voice playback temporarily while keeping desktop/log notifications.
-- `Unmute`: enables voice playback again.
-- `Start Daemon` / `Stop Daemon`: controls the background processor.
-- `Open Config` / `Open Daemon Log`: opens local files for debugging.
-
-The same controls are available from CLI:
-
-```bash
-agent-chime stop-speaking
-agent-chime mute --for 10m
-agent-chime mute --for 1h
-agent-chime unmute
-```
-
-## Custom Messages
-
-Notification text is configurable in `~/.agent-chime/config.toml`.
-
-Use `[messages.en]` to change message templates:
+Change the spoken text with `[messages.en]`:
 
 ```toml
 [messages.en]
@@ -373,53 +212,49 @@ completed_with_summary = "Done: {project}. Summary: {summary}."
 failed = "{project} failed{reason_clause}."
 ```
 
-Available placeholders:
+Available placeholders: `{agent}`, `{project}`, `{reason}`, `{reason_clause}`, `{summary}`, `{count}`, `{items}`.
 
-- `{agent}`: agent name, for example `claude-code` or `codex`;
-- `{project}`: project or session name;
-- `{reason}`: short reason without punctuation;
-- `{reason_clause}`: empty string or `: <reason>`;
-- `{summary}`: final summary for completed sessions;
-- `{count}` and `{items}`: grouped notification values.
+## Menu bar (optional)
 
-For OpenAI TTS speaking style, edit `[voice].instructions`:
-
-```toml
-[voice]
-instructions = "Speak naturally, calmly, and briefly."
-```
-
-## Useful Commands
-
-Show status:
+A macOS menu bar companion gives quick controls without a terminal:
 
 ```bash
-agent-chime status
+pipx inject agent-chime pyobjc-framework-Cocoa
+agent-chime menubar-start
 ```
 
-List recent events:
+It shows estimated spend and generated-audio stats, and offers Stop Speaking, Mute 10 min / 1 hour, Unmute, Start/Stop Daemon, and Open Config / Daemon Log. The same controls are available from the CLI:
 
 ```bash
-agent-chime events --limit 20
+agent-chime stop-speaking
+agent-chime mute --for 10m        # or 1h
+agent-chime unmute
+agent-chime menubar-stop
 ```
 
-Run one daemon pass without delivery:
+## Command reference
 
-```bash
-agent-chime daemon --once --no-deliver
-```
+| Command | What it does |
+| --- | --- |
+| `agent-chime setup [claude-code\|codex\|both]` | **One-command setup:** OpenAI key → voice → hooks → daemon → test. Flags: `--local` (macOS say, no key), `--voice <name>`, `--reset-key`, `--no-test` |
+| `agent-chime install [claude-code\|codex]` | Create config + database, and (with a target) wire agent hooks |
+| `agent-chime start` / `stop` / `status` | Manage the background daemon |
+| `agent-chime test` | Send a test notification |
+| `agent-chime config …` | Show or change voice/language settings |
+| `agent-chime secret set\|status\|delete openai` | Manage the API key in macOS Keychain |
+| `agent-chime mute --for 10m` / `unmute` / `stop-speaking` | Control playback |
+| `agent-chime menubar-start` / `menubar-stop` / `menubar-status` | Menu bar companion |
+| `agent-chime events --limit 20` | List recent events |
+| `agent-chime enqueue-test-event --type input_needed --project demo --session demo --ask "choose an approach"` | Enqueue a synthetic event |
+| `agent-chime daemon --once --no-deliver` | Run one daemon pass without delivery |
 
-Enqueue a synthetic event:
-
-```bash
-agent-chime enqueue-test-event --type input_needed --project demo --session demo --ask "choose an approach"
-```
+The legacy `agent-voice` command is a compatibility alias for `agent-chime`.
 
 ## Privacy
 
-Agent Chime runs locally. Claude and Codex hook payloads are normalized and sanitized before storage; the local SQLite database stores metadata and the short notification summary, not the full hook payload. If GPT summaries are enabled with `privacy_level = "full_last_message"`, the final assistant message for completed sessions is stored only as transient queue input and cleared after daemon processing.
+Agent Chime runs locally. Claude and Codex hook payloads are normalized and sanitized before storage; the local SQLite database keeps metadata and the short notification summary, not the full hook payload. With GPT summaries and `privacy_level = "full_last_message"`, the final assistant message for completed sessions is stored only as transient queue input and cleared after the daemon processes it.
 
-When OpenAI TTS is enabled, only the final notification sentence is sent to the speech endpoint. When GPT summaries are enabled, the selected summary input is sent to the OpenAI Responses API before delivery. Without OpenAI TTS, voice delivery is local through macOS `say`.
+When OpenAI TTS is enabled, only the final notification sentence is sent to the speech endpoint. When summaries are enabled, the selected summary input is sent to the OpenAI Responses API before delivery. With the local macOS `say` backend, voice delivery is entirely on-device.
 
 ## Development
 

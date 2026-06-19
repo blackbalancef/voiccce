@@ -5,10 +5,13 @@ import getpass
 import json
 import sqlite3
 import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import TypeVar
 
 from .config import (
+    AgentVoiceConfig,
     load_config,
     normalize_language,
     set_config_language,
@@ -64,6 +67,29 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--codex-home", help="Codex home directory, e.g. ~/.codex-personal. Uses <dir>/hooks.json.")
     install.add_argument("--hooks-path", help="Direct path to Codex hooks.json")
     install.set_defaults(handler=cmd_install)
+
+    setup = subparsers.add_parser(
+        "setup",
+        help="One command to set up everything: OpenAI key, voice, hooks, daemon, and a test",
+    )
+    setup.add_argument(
+        "target",
+        nargs="?",
+        choices=["claude-code", "codex", "both"],
+        help="Which agent(s) to wire hooks for (prompted if omitted)",
+    )
+    setup.add_argument("--voice", default=None, help="Voice name (default: marin for OpenAI TTS, Alex for --local)")
+    setup.add_argument("--local", action="store_true", help="Use the local macOS say voice instead of OpenAI TTS (no API key)")
+    setup.add_argument("--reset-key", action="store_true", help="Prompt for a new OpenAI key even if one is already configured")
+    setup.add_argument("--no-test", action="store_true", help="Skip the test notification at the end")
+    setup.add_argument(
+        "--claude-config-dir",
+        help="Claude config directory, e.g. ~/.claude-personal. Uses <dir>/settings.json.",
+    )
+    setup.add_argument("--settings-path", help="Direct path to Claude settings.json")
+    setup.add_argument("--codex-home", help="Codex home directory, e.g. ~/.codex-personal. Uses <dir>/hooks.json.")
+    setup.add_argument("--hooks-path", help="Direct path to Codex hooks.json")
+    setup.set_defaults(handler=cmd_setup)
 
     start = subparsers.add_parser("start", help="Start daemon in the background")
     start.set_defaults(handler=cmd_start)
@@ -166,16 +192,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _claude_install_kwargs(args: argparse.Namespace) -> dict[str, Path]:
+    if args.settings_path:
+        return {"settings_path": Path(args.settings_path).expanduser()}
+    if args.claude_config_dir:
+        return {"settings_path": Path(args.claude_config_dir).expanduser() / "settings.json"}
+    return {}
+
+
+def _codex_install_kwargs(args: argparse.Namespace) -> dict[str, Path]:
+    kwargs: dict[str, Path] = {}
+    if args.hooks_path:
+        kwargs["hooks_path"] = Path(args.hooks_path).expanduser()
+    if args.codex_home:
+        kwargs["codex_home"] = Path(args.codex_home).expanduser()
+    return kwargs
+
+
 def cmd_install(args: argparse.Namespace) -> None:
     if args.target == "claude-code":
-        settings_path = None
-        if args.settings_path:
-            settings_path = Path(args.settings_path).expanduser()
-        elif args.claude_config_dir:
-            settings_path = Path(args.claude_config_dir).expanduser() / "settings.json"
-
-        install_kwargs = {"settings_path": settings_path} if settings_path else {}
-        result = install_claude_code_personal(**install_kwargs)
+        result = install_claude_code_personal(**_claude_install_kwargs(args))
         print(f"Claude Code personal settings: {result.settings_path}")
         print(f"Backup: {result.backup_path}")
         print(f"Hook wrapper: {result.wrapper_path}")
@@ -185,15 +221,7 @@ def cmd_install(args: argparse.Namespace) -> None:
         return
 
     if args.target == "codex":
-        hooks_path = Path(args.hooks_path).expanduser() if args.hooks_path else None
-        codex_home = Path(args.codex_home).expanduser() if args.codex_home else None
-        install_kwargs = {}
-        if hooks_path:
-            install_kwargs["hooks_path"] = hooks_path
-        if codex_home:
-            install_kwargs["codex_home"] = codex_home
-
-        result = install_codex_personal(**install_kwargs)
+        result = install_codex_personal(**_codex_install_kwargs(args))
         print(f"Codex hooks: {result.hooks_path}")
         print(f"Backup: {result.backup_path}")
         print(f"Hook wrapper: {result.wrapper_path}")
@@ -213,6 +241,107 @@ def cmd_install(args: argparse.Namespace) -> None:
         conn.close()
     print(f"Config: {config_path}")
     print(f"Database: {config.database_path}")
+
+
+def cmd_setup(args: argparse.Namespace) -> None:
+    config_path = write_default_config(args.config)
+    config = load_config(config_path)
+
+    if args.local:
+        voice = args.voice or "Alex"
+        set_voice_config(config_path, backend="macos_say", voice=voice)
+        print(f"✓ Voice backend: macos_say (voice: {voice}, local macOS voice, no API key)")
+    else:
+        voice = args.voice or "marin"
+        _ensure_openai_key(config, reset=args.reset_key)
+        set_voice_config(config_path, backend="openai_tts", voice=voice)
+        print(f"✓ Voice backend: openai_tts (voice: {voice})")
+
+    target = _resolve_setup_target(args.target)
+    installed: list[str] = []
+    if target in {"claude-code", "both"}:
+        result = _setup_install(
+            "Claude settings.json",
+            install_claude_code_personal,
+            config_path=config_path,
+            **_claude_install_kwargs(args),
+        )
+        print(f"✓ Claude Code hooks → {result.settings_path}")
+        installed.append("claude-code")
+    if target in {"codex", "both"}:
+        result = _setup_install(
+            "Codex hooks.json",
+            install_codex_personal,
+            config_path=config_path,
+            **_codex_install_kwargs(args),
+        )
+        print(f"✓ Codex hooks → {result.hooks_path}")
+        installed.append("codex")
+
+    config = load_config(config_path)
+    pid = start_daemon(config)
+    print(f"✓ Daemon started (pid {pid})")
+
+    if not args.no_test:
+        results = DeliveryRouter(config).deliver("Agent Chime is ready.")
+        if any(result.spoken for result in results):
+            print("✓ Test sent — you should hear it now.")
+        else:
+            error = next((result.error for result in results if result.error), None)
+            detail = f" ({error})" if error else ""
+            print(f"! Test could not play audio{detail}. Check `agent-chime status` and your OpenAI key.")
+
+    print(f"\nDone. Edit {config.config_path} to customize voice, messages, and summaries.")
+    if "claude-code" in installed:
+        print("Claude Code: if a session was already open, start a new one so it loads the hooks.")
+    if "codex" in installed:
+        print("Codex: open /hooks and trust the Agent Chime hooks; restart codex app-server if it was running.")
+
+
+_InstallResult = TypeVar("_InstallResult")
+
+
+def _setup_install(label: str, install: Callable[..., _InstallResult], **kwargs: object) -> _InstallResult:
+    try:
+        return install(**kwargs)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"Could not parse your existing {label} (invalid JSON): {exc}. "
+            "Fix or remove the file, then re-run `agent-chime setup`."
+        )
+    except OSError as exc:
+        raise SystemExit(f"Could not update your {label}: {exc}.")
+
+
+def _ensure_openai_key(config: AgentVoiceConfig, *, reset: bool) -> None:
+    status = get_openai_secret_status(config)
+    if status.available and not reset:
+        print(f"✓ Using existing OpenAI key (from {status.source})")
+        return
+    key = getpass.getpass("OpenAI API key: ").strip()
+    if not key:
+        raise SystemExit("No key entered. Re-run `agent-chime setup`, or use `--local` for the macOS voice.")
+    try:
+        set_openai_keychain_secret(config, key)
+    except RuntimeError as exc:
+        raise SystemExit(
+            f"Could not save the key to macOS Keychain: {exc}. "
+            "Put it in ~/.agent-chime/.env as OPENAI_API_KEY=... instead."
+        )
+    print("✓ OpenAI key saved to macOS Keychain")
+
+
+def _resolve_setup_target(target: str | None) -> str:
+    if target:
+        return target
+    if sys.stdin.isatty():
+        answer = input("Wire hooks for? [claude-code/codex/both] (both): ").strip().lower()
+        target = answer or "both"
+    else:
+        target = "both"
+    if target not in {"claude-code", "codex", "both"}:
+        raise SystemExit(f"Unknown target '{target}'. Choose claude-code, codex, or both.")
+    return target
 
 
 def cmd_status(args: argparse.Namespace) -> None:

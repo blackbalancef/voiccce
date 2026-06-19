@@ -96,22 +96,25 @@ def get_keychain_secret(*, service: str, account: str) -> str | None:
 def set_keychain_secret(*, service: str, account: str, secret: str) -> None:
     if shutil.which("security") is None:
         raise RuntimeError("macOS security command not found")
-    subprocess.run(
-        [
-            "security",
-            "add-generic-password",
-            "-U",
-            "-s",
-            service,
-            "-a",
-            account,
-            "-w",
-            secret,
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        subprocess.run(
+            [
+                "security",
+                "add-generic-password",
+                "-U",
+                "-s",
+                service,
+                "-a",
+                account,
+                "-w",
+                secret,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(exc.stderr.strip() or str(exc)) from exc
 
 
 def delete_keychain_secret(*, service: str, account: str) -> bool:

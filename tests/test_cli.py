@@ -1,12 +1,14 @@
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent_voice.cli import main
+from agent_voice.config import load_config
 
 
 class CliTests(unittest.TestCase):
@@ -115,6 +117,153 @@ class CliTests(unittest.TestCase):
                 main(["install", "codex", "--hooks-path", str(hooks_path)])
 
             self.assertEqual(captured["hooks_path"], hooks_path)
+
+
+class SetupCommandTests(unittest.TestCase):
+    def _fake_claude(self, **kwargs):
+        return SimpleNamespace(settings_path=Path("/tmp/settings.json"))
+
+    def _fake_codex(self, **kwargs):
+        return SimpleNamespace(hooks_path=Path("/tmp/hooks.json"))
+
+    def _router_mock(self, *, spoken: bool = True, error: str | None = None) -> MagicMock:
+        router = MagicMock()
+        router.deliver.return_value = [SimpleNamespace(spoken=spoken, error=error)]
+        return router
+
+    def test_setup_with_existing_key_enables_openai_and_installs_both(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            claude_install = MagicMock(side_effect=self._fake_claude)
+            codex_install = MagicMock(side_effect=self._fake_codex)
+            router = self._router_mock()
+
+            with (
+                patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
+                patch("agent_voice.cli.install_claude_code_personal", claude_install),
+                patch("agent_voice.cli.install_codex_personal", codex_install),
+                patch("agent_voice.cli.start_daemon", return_value=4321) as start,
+                patch("agent_voice.cli.DeliveryRouter", return_value=router),
+                redirect_stdout(StringIO()),
+            ):
+                main(["--config", str(config_path), "setup", "both"])
+
+            config = load_config(config_path)
+            self.assertEqual(config.voice_backend, "openai_tts")
+            self.assertEqual(config.voice_name, "marin")
+            claude_install.assert_called_once()
+            codex_install.assert_called_once()
+            start.assert_called_once()
+            router.deliver.assert_called_once()
+
+    def test_setup_prompts_and_saves_key_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            save_key = MagicMock()
+
+            with (
+                patch.dict(os.environ, {}, clear=False),
+                patch("agent_voice.cli.get_openai_secret_status", return_value=SimpleNamespace(available=False, source="missing")),
+                patch("agent_voice.cli.getpass.getpass", return_value="sk-from-prompt"),
+                patch("agent_voice.cli.set_openai_keychain_secret", save_key),
+                patch("agent_voice.cli.install_claude_code_personal", side_effect=self._fake_claude),
+                patch("agent_voice.cli.start_daemon", return_value=1),
+                patch("agent_voice.cli.DeliveryRouter", return_value=self._router_mock()),
+                redirect_stdout(StringIO()),
+            ):
+                main(["--config", str(config_path), "setup", "claude-code"])
+
+            save_key.assert_called_once()
+            self.assertEqual(save_key.call_args.args[1], "sk-from-prompt")
+
+    def test_setup_claude_only_skips_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            codex_install = MagicMock(side_effect=self._fake_codex)
+
+            with (
+                patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
+                patch("agent_voice.cli.install_claude_code_personal", side_effect=self._fake_claude),
+                patch("agent_voice.cli.install_codex_personal", codex_install),
+                patch("agent_voice.cli.start_daemon", return_value=1),
+                patch("agent_voice.cli.DeliveryRouter", return_value=self._router_mock()),
+                redirect_stdout(StringIO()),
+            ):
+                main(["--config", str(config_path), "setup", "claude-code"])
+
+            codex_install.assert_not_called()
+
+    def test_setup_local_uses_macos_say_without_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            getpass_mock = MagicMock()
+
+            with (
+                patch("agent_voice.cli.getpass.getpass", getpass_mock),
+                patch("agent_voice.cli.install_claude_code_personal", side_effect=self._fake_claude),
+                patch("agent_voice.cli.start_daemon", return_value=1),
+                patch("agent_voice.cli.DeliveryRouter", return_value=self._router_mock()),
+                redirect_stdout(StringIO()),
+            ):
+                main(["--config", str(config_path), "setup", "claude-code", "--local"])
+
+            config = load_config(config_path)
+            self.assertEqual(config.voice_backend, "macos_say")
+            getpass_mock.assert_not_called()
+
+    def test_setup_no_test_skips_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            router = self._router_mock()
+
+            with (
+                patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
+                patch("agent_voice.cli.install_claude_code_personal", side_effect=self._fake_claude),
+                patch("agent_voice.cli.start_daemon", return_value=1),
+                patch("agent_voice.cli.DeliveryRouter", return_value=router),
+                redirect_stdout(StringIO()),
+            ):
+                main(["--config", str(config_path), "setup", "claude-code", "--no-test"])
+
+            router.deliver.assert_not_called()
+
+    def test_setup_warns_when_test_audio_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            router = self._router_mock(spoken=False, error="say command not found")
+            out = StringIO()
+
+            with (
+                patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
+                patch("agent_voice.cli.install_claude_code_personal", side_effect=self._fake_claude),
+                patch("agent_voice.cli.start_daemon", return_value=1),
+                patch("agent_voice.cli.DeliveryRouter", return_value=router),
+                redirect_stdout(out),
+            ):
+                main(["--config", str(config_path), "setup", "claude-code"])
+
+            self.assertIn("could not play audio", out.getvalue())
+
+    def test_setup_reports_invalid_settings_json(self) -> None:
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+
+            def boom(**kwargs):
+                raise _json.JSONDecodeError("bad", "doc", 0)
+
+            with (
+                patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
+                patch("agent_voice.cli.install_claude_code_personal", side_effect=boom),
+                patch("agent_voice.cli.start_daemon", return_value=1) as start,
+                patch("agent_voice.cli.DeliveryRouter", return_value=self._router_mock()),
+                redirect_stdout(StringIO()),
+            ):
+                with self.assertRaises(SystemExit):
+                    main(["--config", str(config_path), "setup", "claude-code"])
+
+            start.assert_not_called()
 
 
 if __name__ == "__main__":
