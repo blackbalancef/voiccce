@@ -1,0 +1,121 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from agent_voice.config import load_config, set_config_language, set_voice_config, write_default_config
+
+
+class ConfigTests(unittest.TestCase):
+    def test_set_config_language_updates_user_language(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+
+            set_config_language(config_path, "en")
+            self.assertEqual(load_config(config_path).language, "en")
+
+            set_config_language(config_path, "english")
+            self.assertEqual(load_config(config_path).language, "en")
+
+    def test_set_voice_config_updates_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+
+            set_voice_config(
+                config_path,
+                backend="openai_tts",
+                voice="marin",
+                speed=1.2,
+                model="gpt-4o-mini-tts",
+                audio_format="mp3",
+                estimated_cost_per_minute_usd=0.0123456,
+                text_input_price_per_million_tokens_usd=0.6,
+                audio_output_price_per_million_tokens_usd=12.0,
+                audio_tokens_per_second=21.25,
+                instructions="Speak calmly.",
+            )
+            config = load_config(config_path)
+
+            self.assertEqual(config.voice_backend, "openai_tts")
+            self.assertEqual(config.voice_name, "marin")
+            self.assertEqual(config.voice_speed, 1.2)
+            self.assertEqual(config.voice_model, "gpt-4o-mini-tts")
+            self.assertEqual(config.voice_format, "mp3")
+            self.assertEqual(config.voice_estimated_cost_per_minute_usd, 0.012346)
+            self.assertEqual(config.voice_text_input_price_per_million_tokens_usd, 0.6)
+            self.assertEqual(config.voice_audio_output_price_per_million_tokens_usd, 12.0)
+            self.assertEqual(config.voice_audio_tokens_per_second, 21.25)
+            self.assertEqual(config.voice_instructions, "Speak calmly.")
+
+    def test_load_config_reads_custom_message_templates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[user]
+language = "en"
+
+[daemon]
+database_path = "events.sqlite3"
+
+[messages.en]
+attention_required = "Human input needed: {project}{reason_clause}."
+""",
+                encoding="utf-8",
+            )
+
+            config = load_config(config_path)
+
+            self.assertEqual(
+                config.message_templates["en"]["attention_required"],
+                "Human input needed: {project}{reason_clause}.",
+            )
+            self.assertEqual(
+                config.message_templates["en"]["completed"],
+                "Session {project} is fully complete.",
+            )
+
+    def test_write_default_config_appends_message_sections_to_existing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[user]
+language = "en"
+""",
+                encoding="utf-8",
+            )
+
+            write_default_config(config_path)
+            text = config_path.read_text(encoding="utf-8")
+
+            self.assertIn("[messages.en]", text)
+            self.assertIn('attention_required = "{agent} in {project} needs attention{reason_clause}."', text)
+
+    def test_write_default_config_appends_summary_prompt_to_existing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                """
+[user]
+language = "en"
+
+[summary]
+enabled = true
+""",
+                encoding="utf-8",
+            )
+
+            write_default_config(config_path)
+            text = config_path.read_text(encoding="utf-8")
+            config = load_config(config_path)
+
+            self.assertIn("prompt = '''", text)
+            self.assertIn("text_input_price_per_million_tokens_usd", text)
+            self.assertTrue(config.summary_enabled)
+            self.assertEqual(config.summary_model, "gpt-5.4-nano")
+            self.assertEqual(config.summary_privacy_level, "full_last_message")
+            self.assertEqual(config.summary_max_input_chars, 6000)
+
+
+if __name__ == "__main__":
+    unittest.main()

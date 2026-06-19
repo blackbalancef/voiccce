@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-chime"
+version = "0.1.0"
+description = "Session-aware voice and desktop notifications for AI coding agents."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Agent Chime" }]
+license = "MIT"
+keywords = ["ai", "claude-code", "codex", "notifications", "tts", "voice", "developer-tools"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
+dependencies = []
+
+[project.optional-dependencies]
+menubar = ["pyobjc-framework-Cocoa>=10"]
+pricing = ["tiktoken>=0.7"]
+
+[project.scripts]
+agent-chime = "agent_voice.cli:main"
+agent-voice = "agent_voice.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agent_voice*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
