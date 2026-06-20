@@ -28,7 +28,14 @@ from .installer.claude_code import install_claude_code_personal
 from .installer.codex import install_codex_personal
 from .models import EventType, NormalizedEvent
 from .queue import enqueue_event
-from .runtime import clear_voice_mute, parse_duration_seconds, set_voice_mute, stop_speaking, voice_mute_status
+from .runtime import (
+    clear_voice_mute,
+    parse_duration_seconds,
+    set_voice_mute,
+    stop_speaking,
+    voice_mute_status,
+    voice_session_active,
+)
 from .secrets import delete_openai_keychain_secret, get_openai_secret_status, set_openai_keychain_secret
 from .service import (
     daemon_status,
@@ -578,6 +585,9 @@ def cmd_events(args: argparse.Namespace) -> None:
 
 def cmd_collect(args: argparse.Namespace) -> None:
     config = load_config(args.config)
+    if args.hook == "UserPromptSubmit":
+        _handle_user_activity(config)
+        return
     conn = connect(config.database_path)
     try:
         if args.agent == "codex":
@@ -591,6 +601,28 @@ def cmd_collect(args: argparse.Namespace) -> None:
     finally:
         conn.close()
     print(json.dumps({"inserted": result.inserted, "event_key": result.event_key}, ensure_ascii=False))
+
+
+def _handle_user_activity(config: AgentVoiceConfig) -> None:
+    """Stop a playing announcement when the user replies into that same session."""
+    if not config.voice_interrupt_on_user_input:
+        return
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    session_id = (
+        payload.get("session_id")
+        or payload.get("sessionId")
+        or payload.get("conversation_id")
+        or payload.get("run_id")
+    )
+    if not session_id or not voice_session_active(config, str(session_id)):
+        return
+    pid = stop_speaking(config)
+    print(json.dumps({"interrupted": True, "session_id": session_id, "pid": pid}, ensure_ascii=False))
 
 
 def cmd_enqueue_test_event(args: argparse.Namespace) -> None:

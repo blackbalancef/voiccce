@@ -425,6 +425,13 @@ class AgentVoiceMenuBar(NSObject):
         reminders_item.setState_(1 if config.notify_input_needed else 0)
         menu.addItem_(reminders_item)
 
+        interrupt_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Stop audio when I reply", "toggleInterruptOnReply:", ""
+        )
+        interrupt_item.setTarget_(self)
+        interrupt_item.setState_(1 if config.voice_interrupt_on_user_input else 0)
+        menu.addItem_(interrupt_item)
+
     @_python_method
     def _choices_with_current(self, choices: tuple[str, ...], current: str | None) -> list[str]:
         result = list(choices)
@@ -564,6 +571,14 @@ class AgentVoiceMenuBar(NSObject):
         set_events_config(config.config_path, input_needed=new_value)
         self._restart_daemon_if_running()
         self._log(f"Idle reminders {'enabled' if new_value else 'disabled'}")
+        self.refresh()
+
+    def toggleInterruptOnReply_(self, sender) -> None:
+        config = self._config()
+        new_value = not config.voice_interrupt_on_user_input
+        set_voice_config(config.config_path, interrupt_on_user_input=new_value)
+        # Read fresh by the hook on each invocation — no daemon restart needed.
+        self._log(f"Stop-audio-on-reply {'enabled' if new_value else 'disabled'}")
         self.refresh()
 
     @_python_method

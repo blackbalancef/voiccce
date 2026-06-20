@@ -6,13 +6,16 @@ from pathlib import Path
 
 from agent_voice.config import AgentVoiceConfig
 from agent_voice.runtime import (
+    clear_active_voice_sessions,
     clear_voice_mute,
     clear_voice_activity,
     parse_duration_seconds,
     read_voice_activity_started_at,
+    set_active_voice_sessions,
     set_voice_mute,
     start_voice_activity,
     voice_mute_status,
+    voice_session_active,
     write_voice_pid,
     stop_speaking,
     request_voice_stop,
@@ -22,6 +25,22 @@ from agent_voice.runtime import (
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_active_voice_sessions_tracking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=Path(tmp) / "events.sqlite3",
+            )
+            self.assertFalse(voice_session_active(config, "s1", now=1000.0))
+            set_active_voice_sessions(config, ["s1", "s2"], now=1000.0)
+            self.assertTrue(voice_session_active(config, "s1", now=1000.0))
+            self.assertTrue(voice_session_active(config, "s2", now=1001.0))
+            self.assertFalse(voice_session_active(config, "s3", now=1000.0))
+            # stale window -> not active
+            self.assertFalse(voice_session_active(config, "s1", now=1000.0 + 10**6))
+            clear_active_voice_sessions(config)
+            self.assertFalse(voice_session_active(config, "s1", now=1000.0))
+
     def test_parse_duration_seconds(self) -> None:
         self.assertEqual(parse_duration_seconds("30s"), 30)
         self.assertEqual(parse_duration_seconds("10m"), 600)

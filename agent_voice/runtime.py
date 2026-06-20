@@ -134,6 +134,39 @@ def read_voice_activity_started_at(
     return started_at
 
 
+def set_active_voice_sessions(
+    config: AgentVoiceConfig, sessions: list[str], *, now: float | None = None
+) -> None:
+    started_at = now or time.time()
+    state = read_runtime_state(config)
+    state["voice_active_sessions"] = [s for s in sessions if s]
+    state["voice_active_sessions_at"] = started_at
+    write_runtime_state(config, state)
+
+
+def clear_active_voice_sessions(config: AgentVoiceConfig) -> None:
+    state = read_runtime_state(config)
+    state.pop("voice_active_sessions", None)
+    state.pop("voice_active_sessions_at", None)
+    write_runtime_state(config, state)
+
+
+def voice_session_active(
+    config: AgentVoiceConfig,
+    session_id: str,
+    *,
+    now: float | None = None,
+    max_age_seconds: float = VOICE_ACTIVITY_STALE_SECONDS,
+) -> bool:
+    current_time = now or time.time()
+    state = read_runtime_state(config)
+    started_at = state.get("voice_active_sessions_at")
+    if not isinstance(started_at, int | float) or current_time - float(started_at) > max_age_seconds:
+        return False
+    sessions = state.get("voice_active_sessions")
+    return isinstance(sessions, list) and session_id in sessions
+
+
 def request_voice_stop(config: AgentVoiceConfig, *, now: float | None = None) -> float:
     stopped_at = now or time.time()
     state = read_runtime_state(config)

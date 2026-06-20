@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -8,7 +9,49 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agent_voice.cli import main
-from agent_voice.config import load_config
+from agent_voice.config import load_config, set_voice_config, write_default_config
+from agent_voice.runtime import set_active_voice_sessions
+
+
+class UserPromptInterruptTests(unittest.TestCase):
+    def _run_user_prompt(self, config_path: Path, session_id: str) -> MagicMock:
+        payload = json.dumps({"session_id": session_id})
+        mock_stop = MagicMock(return_value=4321)
+        with (
+            patch("agent_voice.cli.stop_speaking", mock_stop),
+            patch("sys.stdin", StringIO(payload)),
+            redirect_stdout(StringIO()),
+        ):
+            main(["--config", str(config_path), "collect", "claude-code", "--hook", "UserPromptSubmit"])
+        return mock_stop
+
+    def test_reply_into_active_session_stops_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            config = load_config(config_path)
+            set_active_voice_sessions(config, ["sess-1"])  # currently being voiced
+            mock_stop = self._run_user_prompt(config_path, "sess-1")
+            mock_stop.assert_called_once()
+
+    def test_reply_into_other_session_does_not_stop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            config = load_config(config_path)
+            set_active_voice_sessions(config, ["sess-1"])
+            mock_stop = self._run_user_prompt(config_path, "different-session")
+            mock_stop.assert_not_called()
+
+    def test_disabled_toggle_never_stops(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            set_voice_config(config_path, interrupt_on_user_input=False)
+            config = load_config(config_path)
+            set_active_voice_sessions(config, ["sess-1"])
+            mock_stop = self._run_user_prompt(config_path, "sess-1")
+            mock_stop.assert_not_called()
 
 
 class CliTests(unittest.TestCase):

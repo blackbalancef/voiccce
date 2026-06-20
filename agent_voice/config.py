@@ -142,6 +142,7 @@ api_key_keychain_service = "agent-chime"
 api_key_keychain_account = "openai"
 instructions = "Speak naturally, calmly, and briefly. This is a short developer notification."
 timeout_seconds = 15
+interrupt_on_user_input = true
 
 [desktop]
 enabled = true
@@ -214,6 +215,7 @@ class AgentVoiceConfig:
     voice_api_key_keychain_account: str = "openai"
     voice_instructions: str = "Speak naturally, calmly, and briefly. This is a short developer notification."
     voice_timeout_seconds: int = 15
+    voice_interrupt_on_user_input: bool = True
     summary_enabled: bool = True
     summary_provider: str = "openai"
     summary_model: str = DEFAULT_SUMMARY_MODEL
@@ -308,6 +310,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AgentVoiceConfig:
             "Speak naturally, calmly, and briefly. This is a short developer notification.",
         ),
         voice_timeout_seconds=int(voice.get("timeout_seconds", 15)),
+        voice_interrupt_on_user_input=bool(voice.get("interrupt_on_user_input", True)),
         summary_enabled=bool(summary.get("enabled", True)),
         summary_provider=normalize_summary_provider(summary.get("provider", "openai")),
         summary_model=summary.get("model", DEFAULT_SUMMARY_MODEL),
@@ -543,8 +546,11 @@ def set_voice_config(
     audio_tokens_per_second: float | None = None,
     instructions: str | None = None,
     api_key_env: str | None = None,
+    interrupt_on_user_input: bool | None = None,
 ) -> Path:
-    values: dict[str, str | int | float] = {}
+    values: dict[str, str | int | float | bool] = {}
+    if interrupt_on_user_input is not None:
+        values["interrupt_on_user_input"] = bool(interrupt_on_user_input)
     if backend is not None:
         values["backend"] = normalize_voice_backend(backend)
     if voice is not None:

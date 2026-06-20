@@ -26,6 +26,7 @@ CLAUDE_HOOKS = {
     "PermissionRequest": {"matcher": "*"},
     "StopFailure": {"matcher": None},
     "SubagentStop": {"matcher": None},
+    "UserPromptSubmit": {"matcher": None},
 }
 
 

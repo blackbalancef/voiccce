@@ -12,6 +12,7 @@ from .intelligence.fallback import build_grouped_message
 from .intelligence.pipeline_log import log_summary_pipeline
 from .intelligence.summarizer import summarize_notification
 from .models import EventType, NotificationCategory, now_ts, stable_hash
+from .runtime import clear_active_voice_sessions, set_active_voice_sessions
 from .session_state import NotificationCandidate, SessionStateManager
 
 
@@ -119,7 +120,20 @@ def process_once(
         if deliver:
             delivery_config = config if voice_allowed else replace(config, voice_enabled=False)
             router = DeliveryRouter(delivery_config, terminal_only=terminal_only)
-            results = router.deliver(message)
+            voicing = voice_allowed and delivery_config.voice_enabled and not terminal_only
+            if voicing:
+                # Record which sessions are being spoken so a UserPromptSubmit hook
+                # for the same session can cut the playback short.
+                set_active_voice_sessions(
+                    config,
+                    [candidate.session_id for candidate in candidates],
+                    now=current_time,
+                )
+            try:
+                results = router.deliver(message)
+            finally:
+                if voicing:
+                    clear_active_voice_sessions(config)
             audio_generated = any(result.audio_generated for result in results)
             audio_duration_seconds = sum(result.audio_duration_seconds for result in results)
             audio_cost_usd = sum(result.audio_cost_usd for result in results)
