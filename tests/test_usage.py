@@ -3,10 +3,16 @@ import tempfile
 import unittest
 
 from agent_voice.db import connect, init_db
+from agent_voice.models import EventType, NormalizedEvent
+from agent_voice.queue import enqueue_event
 from agent_voice.usage import (
+    fetch_spend_by_agent,
+    fetch_spend_by_channel,
     fetch_usage_stats,
     format_duration,
     format_usd,
+    read_dashboard,
+    sparkline,
     start_of_day_epoch,
 )
 
@@ -242,6 +248,73 @@ class UsageTests(unittest.TestCase):
         self.assertLess(now - midnight, 24 * 3600)
         # unknown timezone falls back without raising
         self.assertIsInstance(start_of_day_epoch("Not/AZone", now=now), int)
+
+    def test_sparkline_renders_relative_heights(self) -> None:
+        self.assertEqual(sparkline([]), "")
+        self.assertEqual(sparkline([0, 0, 0]), "▁▁▁")
+        spark = sparkline([0, 5, 10])
+        self.assertEqual(len(spark), 3)
+        self.assertEqual(spark[0], "▁")
+        self.assertEqual(spark[-1], "█")
+
+    def test_spend_breakdown_by_agent_and_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(f"{tmp}/events.sqlite3")
+            init_db(conn)
+            for key, agent in [("k1", "claude-code"), ("k2", "codex")]:
+                enqueue_event(
+                    conn,
+                    NormalizedEvent.build(
+                        event_key=key,
+                        agent_name=agent,
+                        event_type=EventType.TASK_FINISHED,
+                        project_name="p",
+                        session_id=key,
+                    ),
+                )
+            for key, cost in [("k1", 0.03), ("k2", 0.01)]:
+                conn.execute(
+                    """
+                    INSERT INTO notifications (
+                        event_ids_json, category, channel, message, notification_hash,
+                        spoken, audio_generated, audio_duration_seconds, audio_cost_usd,
+                        summary_cost_usd, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (f'["{key}"]', "completed", "openai_tts", "Done.", f"h{key}", 1, 1, 5.0, cost, 0.0, 100),
+                )
+            conn.commit()
+
+            by_agent = dict((a, (s, n)) for a, s, n in fetch_spend_by_agent(conn))
+            self.assertAlmostEqual(by_agent["claude-code"][0], 0.03)
+            self.assertAlmostEqual(by_agent["codex"][0], 0.01)
+
+            # `since` filters on notifications.created_at, not the joined events row
+            self.assertEqual(len(fetch_spend_by_agent(conn, since=50)), 2)
+            self.assertEqual(fetch_spend_by_agent(conn, since=200), [])
+
+            by_channel = fetch_spend_by_channel(conn)
+            self.assertEqual(by_channel[0][0], "openai_tts")
+            self.assertAlmostEqual(by_channel[0][1], 0.04)
+            conn.close()
+
+    def test_read_dashboard_buckets_today_and_all_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            today = start_of_day_epoch("Europe/Belgrade")
+            _insert_notification(conn, created_at=today + 60, cost=0.02, summary_cost=0.0, spoken=1)  # today
+            _insert_notification(conn, created_at=today - 5 * 86400, cost=0.05, summary_cost=0.0, spoken=1)  # 5 days ago
+            conn.commit()
+            conn.close()
+
+            data = read_dashboard(db_path, "Europe/Belgrade")
+            self.assertAlmostEqual(data.today.audio_cost_usd, 0.02)
+            self.assertAlmostEqual(data.last_7d.audio_cost_usd, 0.07)
+            self.assertAlmostEqual(data.all_time.audio_cost_usd, 0.07)
+            self.assertEqual(len(data.spark_7d), 7)
+            self.assertGreater(data.spark_7d[-1], 0)  # today bucket has spend
 
     def test_format_helpers_keep_small_values_visible(self) -> None:
         self.assertEqual(format_usd(0), "$0.0000")

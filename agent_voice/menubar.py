@@ -67,13 +67,18 @@ from .runtime import (
 )
 from .service import daemon_status, service_paths, start_daemon, stop_daemon
 from .usage import (
+    DashboardData,
     UsageStats,
     format_duration,
     format_usd,
+    read_dashboard,
     read_last_voice_channel,
-    read_usage_stats,
-    start_of_day_epoch,
+    sparkline,
 )
+
+
+AGENT_LABELS = {"claude-code": "Claude", "codex": "Codex", "other": "Other"}
+CHANNEL_LABELS = {"openai_tts": "OpenAI", "macos_say": "say"}
 
 
 MENU_BAR_ICON_SIZE = 22.0
@@ -474,14 +479,26 @@ class AgentVoiceMenuBar(NSObject):
     @_python_method
     def _add_dashboard_items(self, menu: object, config) -> None:
         menu.addItem_(self._item("Dashboard (spend)", enabled=False))
-        all_time = self._read_usage_stats(config)
-        if all_time is None:
+        data = self._read_dashboard(config)
+        if data is None:
             menu.addItem_(self._item("Stats unavailable", enabled=False))
             return
-        today = self._read_usage_stats(config, since=start_of_day_epoch(config.timezone)) or all_time
 
-        menu.addItem_(self._item(self._spend_line("Today", today), enabled=False))
-        menu.addItem_(self._item(self._spend_line("All-time", all_time), enabled=False))
+        menu.addItem_(self._item(self._spend_line("Today", data.today), enabled=False))
+        menu.addItem_(self._item(self._spend_line("7 days", data.last_7d), enabled=False))
+        menu.addItem_(self._item(self._spend_line("30 days", data.last_30d), enabled=False))
+        menu.addItem_(self._item(self._spend_line("All-time", data.all_time), enabled=False))
+
+        spark = sparkline(data.spark_7d)
+        if spark:
+            menu.addItem_(self._item(f"7-day trend  {spark}", enabled=False))
+
+        agent_line = self._breakdown_line(data.by_agent, AGENT_LABELS)
+        if agent_line:
+            menu.addItem_(self._item(f"By agent (today): {agent_line}", enabled=False))
+        channel_line = self._breakdown_line(data.by_channel, CHANNEL_LABELS)
+        if channel_line:
+            menu.addItem_(self._item(f"By channel (today): {channel_line}", enabled=False))
 
     @_python_method
     def _spend_line(self, label: str, stats: UsageStats) -> str:
@@ -493,11 +510,20 @@ class AgentVoiceMenuBar(NSObject):
         )
 
     @_python_method
-    def _read_usage_stats(self, config, *, since: int | None = None) -> UsageStats | None:
+    def _breakdown_line(self, rows: list[tuple[str, float, int]], labels: dict[str, str]) -> str:
+        parts = [
+            f"{labels.get(key, key)} {format_usd(spend)} ({spoken})"
+            for key, spend, spoken in rows
+            if spoken > 0 or spend > 0
+        ]
+        return " · ".join(parts)
+
+    @_python_method
+    def _read_dashboard(self, config) -> DashboardData | None:
         try:
-            return read_usage_stats(config.database_path, since=since)
+            return read_dashboard(config.database_path, config.timezone)
         except Exception as exc:
-            self._log(f"Stats read failed: {exc}")
+            self._log(f"Dashboard read failed: {exc}")
             return None
 
     @_python_method
