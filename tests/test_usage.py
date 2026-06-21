@@ -3,7 +3,26 @@ import tempfile
 import unittest
 
 from agent_voice.db import connect, init_db
-from agent_voice.usage import fetch_usage_stats, format_duration, format_usd
+from agent_voice.usage import (
+    fetch_usage_stats,
+    format_duration,
+    format_usd,
+    start_of_day_epoch,
+)
+
+
+def _insert_notification(conn, *, created_at: int, cost: float, summary_cost: float, spoken: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO notifications (
+            event_ids_json, category, channel, message, notification_hash,
+            spoken, audio_generated, audio_duration_seconds, audio_cost_usd,
+            summary_cost_usd, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("[]", "completed", "openai_tts", "Done.", f"h{created_at}", spoken, 1, 5.0, cost, summary_cost, created_at),
+    )
 
 
 class UsageTests(unittest.TestCase):
@@ -190,6 +209,39 @@ class UsageTests(unittest.TestCase):
             self.assertGreater(stats.audio_output_audio_tokens, 0)
             self.assertEqual(row[0], "legacy_per_minute")
             conn.close()
+
+    def test_fetch_usage_stats_filters_by_since(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = connect(f"{tmp}/events.sqlite3")
+            init_db(conn)
+            _insert_notification(conn, created_at=100, cost=0.01, summary_cost=0.001, spoken=1)   # "yesterday"
+            _insert_notification(conn, created_at=5000, cost=0.02, summary_cost=0.002, spoken=1)  # "today"
+            conn.commit()
+
+            all_time = fetch_usage_stats(conn)
+            today = fetch_usage_stats(conn, since=1000)
+
+            self.assertEqual(all_time.reports_listened_count, 2)
+            self.assertAlmostEqual(all_time.audio_cost_usd, 0.03)
+            self.assertAlmostEqual(all_time.summary_cost_usd, 0.003)
+
+            self.assertEqual(today.reports_listened_count, 1)
+            self.assertAlmostEqual(today.audio_cost_usd, 0.02)
+            self.assertAlmostEqual(today.summary_cost_usd, 0.002)
+            conn.close()
+
+    def test_start_of_day_epoch_returns_local_midnight(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now = 1781962200  # arbitrary fixed instant
+        midnight = start_of_day_epoch("Europe/Belgrade", now=now)
+        local = datetime.fromtimestamp(midnight, ZoneInfo("Europe/Belgrade"))
+        self.assertEqual((local.hour, local.minute, local.second), (0, 0, 0))
+        self.assertLessEqual(midnight, now)
+        self.assertLess(now - midnight, 24 * 3600)
+        # unknown timezone falls back without raising
+        self.assertIsInstance(start_of_day_epoch("Not/AZone", now=now), int)
 
     def test_format_helpers_keep_small_values_visible(self) -> None:
         self.assertEqual(format_usd(0), "$0.0000")

@@ -198,6 +198,7 @@ class AgentVoiceConfig:
     config_path: Path = DEFAULT_CONFIG_PATH
     database_path: Path = DEFAULT_DB_PATH
     language: str = "en"
+    timezone: str = "Europe/Belgrade"
     poll_interval_ms: int = 500
     voice_enabled: bool = True
     voice_backend: str = "macos_say"
@@ -285,6 +286,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AgentVoiceConfig:
         config_path=config_path,
         database_path=expand_path(daemon.get("database_path", str(DEFAULT_DB_PATH))),
         language=normalize_language(user.get("language", "en")),
+        timezone=str(user.get("timezone", "Europe/Belgrade")),
         poll_interval_ms=int(daemon.get("poll_interval_ms", 500)),
         voice_enabled=bool(voice.get("enabled", True)),
         voice_backend=voice.get("backend", "macos_say"),

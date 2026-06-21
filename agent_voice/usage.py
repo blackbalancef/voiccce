@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import connect, init_db
+
+
+def start_of_day_epoch(timezone: str, *, now: float | None = None) -> int:
+    """Epoch seconds of the most recent local midnight in ``timezone``."""
+    try:
+        tz = ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        tz = datetime.now().astimezone().tzinfo
+    current = datetime.fromtimestamp(time.time() if now is None else now, tz)
+    midnight = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(midnight.timestamp())
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,18 +36,20 @@ class UsageStats:
     reports_listened_count: int
 
 
-def read_usage_stats(db_path: str | Path) -> UsageStats:
+def read_usage_stats(db_path: str | Path, *, since: int | None = None) -> UsageStats:
     conn = connect(db_path)
     try:
-        return fetch_usage_stats(conn)
+        return fetch_usage_stats(conn, since=since)
     finally:
         conn.close()
 
 
-def fetch_usage_stats(conn: sqlite3.Connection) -> UsageStats:
+def fetch_usage_stats(conn: sqlite3.Connection, *, since: int | None = None) -> UsageStats:
     init_db(conn)
+    where = "WHERE created_at >= ?" if since is not None else ""
+    params: tuple[int, ...] = (since,) if since is not None else ()
     row = conn.execute(
-        """
+        f"""
         SELECT
             COALESCE(SUM(audio_cost_usd), 0) AS audio_cost_usd,
             COALESCE(SUM(audio_duration_seconds), 0) AS audio_duration_seconds,
@@ -47,7 +63,9 @@ def fetch_usage_stats(conn: sqlite3.Connection) -> UsageStats:
             COALESCE(SUM(summary_cost_usd), 0) AS summary_cost_usd,
             COALESCE(SUM(CASE WHEN spoken THEN 1 ELSE 0 END), 0) AS reports_listened_count
         FROM notifications
-        """
+        {where}
+        """,
+        params,
     ).fetchone()
     return UsageStats(
         audio_cost_usd=float(_row_value(row, "audio_cost_usd", 0.0)),

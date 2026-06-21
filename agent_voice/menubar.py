@@ -72,6 +72,7 @@ from .usage import (
     format_usd,
     read_last_voice_channel,
     read_usage_stats,
+    start_of_day_epoch,
 )
 
 
@@ -472,29 +473,29 @@ class AgentVoiceMenuBar(NSObject):
 
     @_python_method
     def _add_dashboard_items(self, menu: object, config) -> None:
-        menu.addItem_(self._item("Dashboard", enabled=False))
-        stats = self._read_usage_stats(config)
-        if stats is None:
+        menu.addItem_(self._item("Dashboard (spend)", enabled=False))
+        all_time = self._read_usage_stats(config)
+        if all_time is None:
             menu.addItem_(self._item("Stats unavailable", enabled=False))
             return
+        today = self._read_usage_stats(config, since=start_of_day_epoch(config.timezone)) or all_time
 
-        menu.addItem_(
-            self._item(
-                (
-                    f"Audio: {format_usd(stats.audio_cost_usd)} est. | "
-                    f"{format_duration(stats.audio_duration_seconds)} | "
-                    f"{stats.audio_generated_count} generated"
-                ),
-                enabled=False,
-            )
-        )
-        menu.addItem_(self._item(f"Summaries: {format_usd(stats.summary_cost_usd)}", enabled=False))
-        menu.addItem_(self._item(f"Reports listened: {stats.reports_listened_count}", enabled=False))
+        menu.addItem_(self._item(self._spend_line("Today", today), enabled=False))
+        menu.addItem_(self._item(self._spend_line("All-time", all_time), enabled=False))
 
     @_python_method
-    def _read_usage_stats(self, config) -> UsageStats | None:
+    def _spend_line(self, label: str, stats: UsageStats) -> str:
+        total = stats.audio_cost_usd + stats.summary_cost_usd
+        return (
+            f"{label}: {format_usd(total)} · "
+            f"{format_duration(stats.audio_duration_seconds)} · "
+            f"{stats.reports_listened_count} spoken"
+        )
+
+    @_python_method
+    def _read_usage_stats(self, config, *, since: int | None = None) -> UsageStats | None:
         try:
-            return read_usage_stats(config.database_path)
+            return read_usage_stats(config.database_path, since=since)
         except Exception as exc:
             self._log(f"Stats read failed: {exc}")
             return None
