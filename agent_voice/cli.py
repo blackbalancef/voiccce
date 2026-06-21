@@ -23,9 +23,11 @@ from .db import connect, init_db
 from .delivery import DeliveryRouter
 from .hooks.claude_event_collector import read_event_from_stdin as read_claude_event_from_stdin
 from .hooks.codex_event_collector import read_event_from_stdin as read_codex_event_from_stdin
+from .hooks.pi_event_collector import read_event_from_stdin as read_pi_event_from_stdin
 from .installer import WrapperImportError
 from .installer.claude_code import install_claude_code_personal
 from .installer.codex import install_codex_personal
+from .installer.pi import install_pi_personal
 from .models import EventType, NormalizedEvent
 from .queue import enqueue_event
 from .runtime import (
@@ -65,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     install = subparsers.add_parser("install", help="Create local config and database")
-    install.add_argument("target", nargs="?", choices=["claude-code", "codex"], help="Optional integration to install")
+    install.add_argument("target", nargs="?", choices=["claude-code", "codex", "pi"], help="Optional integration to install")
     install.add_argument("--scope", default="personal", choices=["personal"], help="Claude settings scope")
     install.add_argument(
         "--claude-config-dir",
@@ -74,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--settings-path", help="Direct path to Claude settings.json")
     install.add_argument("--codex-home", help="Codex home directory, e.g. ~/.codex-personal. Uses <dir>/hooks.json.")
     install.add_argument("--hooks-path", help="Direct path to Codex hooks.json")
+    install.add_argument("--pi-home", help="pi home directory (default ~/.pi). Installs a global extension.")
     install.set_defaults(handler=cmd_install)
 
     setup = subparsers.add_parser(
@@ -83,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "target",
         nargs="?",
-        choices=["claude-code", "codex", "both"],
+        choices=["claude-code", "codex", "pi", "both"],
         help="Which agent(s) to wire hooks for (prompted if omitted)",
     )
     setup.add_argument("--voice", default=None, help="Voice name (default: marin for OpenAI TTS, Alex for --local)")
@@ -97,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--settings-path", help="Direct path to Claude settings.json")
     setup.add_argument("--codex-home", help="Codex home directory, e.g. ~/.codex-personal. Uses <dir>/hooks.json.")
     setup.add_argument("--hooks-path", help="Direct path to Codex hooks.json")
+    setup.add_argument("--pi-home", help="pi home directory (default ~/.pi). Installs a global extension.")
     setup.set_defaults(handler=cmd_setup)
 
     start = subparsers.add_parser("start", help="Start daemon in the background")
@@ -173,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     events.set_defaults(handler=cmd_events)
 
     collect = subparsers.add_parser("collect", help="Read a hook payload from stdin and enqueue it")
-    collect.add_argument("agent", choices=["claude-code", "codex"])
+    collect.add_argument("agent", choices=["claude-code", "codex", "pi"])
     collect.add_argument(
         "--hook",
         default="Stop",
@@ -217,6 +221,13 @@ def _codex_install_kwargs(args: argparse.Namespace) -> dict[str, Path]:
     return kwargs
 
 
+def _pi_install_kwargs(args: argparse.Namespace) -> dict[str, Path]:
+    kwargs: dict[str, Path] = {}
+    if getattr(args, "pi_home", None):
+        kwargs["pi_home"] = Path(args.pi_home).expanduser()
+    return kwargs
+
+
 def cmd_install(args: argparse.Namespace) -> None:
     try:
         _cmd_install(args)
@@ -245,6 +256,16 @@ def _cmd_install(args: argparse.Namespace) -> None:
         print("Installed hooks: " + ", ".join(result.installed_events))
         print("Restart Codex app or app-server if it was already running.")
         print("Review and trust the new hook in Codex with /hooks before normal runs.")
+        return
+
+    if args.target == "pi":
+        result = install_pi_personal(verify=True, **_pi_install_kwargs(args))
+        print(f"pi extension: {result.extension_path}")
+        print(f"Hook wrapper: {result.wrapper_path}")
+        print(f"Config: {result.config_path}")
+        print(f"Database: {result.database_path}")
+        print("Wired events: " + ", ".join(result.installed_events))
+        print("Restart pi (or run /reload) so it picks up the new extension.")
         return
 
     config_path = write_default_config(args.config)
@@ -294,6 +315,16 @@ def cmd_setup(args: argparse.Namespace) -> None:
         )
         print(f"✓ Codex hooks → {result.hooks_path}")
         installed.append("codex")
+    if target == "pi":
+        result = _setup_install(
+            "pi extension",
+            install_pi_personal,
+            config_path=config_path,
+            verify=True,
+            **_pi_install_kwargs(args),
+        )
+        print(f"✓ pi extension → {result.extension_path}")
+        installed.append("pi")
 
     config = load_config(config_path)
     pid = start_daemon(config)
@@ -313,6 +344,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
         print("Claude Code: if a session was already open, start a new one so it loads the hooks.")
     if "codex" in installed:
         print("Codex: open /hooks and trust the Agent Chime hooks; restart codex app-server if it was running.")
+    if "pi" in installed:
+        print("pi: restart pi (or run /reload) so it loads the new ~/.pi extension.")
 
 
 _InstallResult = TypeVar("_InstallResult")
@@ -354,12 +387,12 @@ def _resolve_setup_target(target: str | None) -> str:
     if target:
         return target
     if sys.stdin.isatty():
-        answer = input("Wire hooks for? [claude-code/codex/both] (both): ").strip().lower()
+        answer = input("Wire hooks for? [claude-code/codex/pi/both] (both): ").strip().lower()
         target = answer or "both"
     else:
         target = "both"
-    if target not in {"claude-code", "codex", "both"}:
-        raise SystemExit(f"Unknown target '{target}'. Choose claude-code, codex, or both.")
+    if target not in {"claude-code", "codex", "pi", "both"}:
+        raise SystemExit(f"Unknown target '{target}'. Choose claude-code, codex, pi, or both.")
     return target
 
 
@@ -592,6 +625,8 @@ def cmd_collect(args: argparse.Namespace) -> None:
     try:
         if args.agent == "codex":
             event = read_codex_event_from_stdin(args.hook)
+        elif args.agent == "pi":
+            event = read_pi_event_from_stdin(args.hook)
         else:
             event = read_claude_event_from_stdin(args.hook)
         result = enqueue_event(conn, event)

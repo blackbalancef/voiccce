@@ -77,7 +77,7 @@ from .usage import (
 )
 
 
-AGENT_LABELS = {"claude-code": "Claude", "codex": "Codex", "other": "Other"}
+AGENT_LABELS = {"claude-code": "Claude", "codex": "Codex", "pi": "Pi", "other": "Other"}
 CHANNEL_LABELS = {"openai_tts": "OpenAI", "macos_say": "say"}
 
 
@@ -361,14 +361,6 @@ class AgentVoiceMenuBar(NSObject):
 
     @_python_method
     def _add_voice_engine_items(self, menu: object, config) -> None:
-        if config.voice_backend == "openai_tts":
-            engine_label = f"Engine: OpenAI TTS · {config.voice_model}"
-        else:
-            engine_label = "Engine: macOS say (local)"
-        if config.voice_name:
-            engine_label += f" ({config.voice_name})"
-        menu.addItem_(self._item(engine_label, enabled=False))
-
         last_channel = self._read_last_voice_channel(config)
         if last_channel == "openai_tts":
             last_label = "Last spoken: OpenAI TTS"
@@ -380,11 +372,6 @@ class AgentVoiceMenuBar(NSObject):
         else:
             last_label = "Last spoken: —"
         menu.addItem_(self._item(last_label, enabled=False))
-
-        if config.summary_enabled:
-            menu.addItem_(self._item(f"Summary: {config.summary_model}", enabled=False))
-        else:
-            menu.addItem_(self._item("Summary: off (raw last message)", enabled=False))
 
         self._add_picker_items(menu, config)
 
