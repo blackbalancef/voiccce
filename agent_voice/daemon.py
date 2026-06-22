@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass, replace
+from pathlib import Path
 
-from .config import AgentVoiceConfig
+from .config import AgentVoiceConfig, load_config
 from .db import connect, fetch_pending_events, init_db, mark_events_processed
 from .delivery import DeliveryRouter
 from .intelligence.fallback import build_grouped_message
@@ -292,14 +294,46 @@ def _recently_voiced_sessions(conn: sqlite3.Connection, since: int) -> set[str]:
     return sessions
 
 
+def _config_mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def maybe_reload_config(
+    config: AgentVoiceConfig, config_path: Path, last_mtime: float | None
+) -> tuple[AgentVoiceConfig, float | None]:
+    """Reload config from disk when the file changed; otherwise return it unchanged.
+
+    Returns the (possibly new) config and the mtime to track next. On a transient
+    read/parse error (e.g. a non-atomic write caught mid-flight) the previous config
+    and mtime are kept so the next poll cycle retries.
+    """
+    current_mtime = _config_mtime(config_path)
+    if current_mtime is None or current_mtime == last_mtime:
+        return config, last_mtime
+    try:
+        return load_config(config_path), current_mtime
+    except Exception as exc:  # partial write / transient parse error — retry next cycle
+        print(f"[voiccce daemon] config reload failed: {exc}", file=sys.stderr, flush=True)
+        return config, last_mtime
+
+
 def run_daemon(config: AgentVoiceConfig, *, once: bool = False, deliver: bool = True, terminal_only: bool = False) -> None:
     conn = connect(config.database_path)
     init_db(conn)
+    config_path = config.config_path
+    last_mtime = _config_mtime(config_path)
     try:
         while True:
             process_once(conn, config, deliver=deliver, terminal_only=terminal_only)
             if once:
                 return
             time.sleep(config.poll_interval_ms / 1000)
+            # Hot-reload config so menu-bar tweaks (speed, voice, model, toggles) take
+            # effect within one poll cycle without restarting the daemon — restarting
+            # on every change froze the menu bar mid-interaction.
+            config, last_mtime = maybe_reload_config(config, config_path, last_mtime)
     finally:
         conn.close()

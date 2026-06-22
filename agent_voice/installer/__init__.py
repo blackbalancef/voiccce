@@ -39,7 +39,7 @@ def verify_wrapper_imports(python_executable: Path, repo_root: Path) -> None:
         raise WrapperImportError(
             f"The hook interpreter {python_executable} cannot import agent_voice "
             f"with PYTHONPATH={repo_root}.\n{detail}\n\n"
-            "Re-run setup with the interpreter that has agent-chime installed, e.g. "
-            "`python -m agent_voice ... setup` from the agent-chime virtualenv, "
-            "or `pipx run --spec agent-chime agent-chime setup`."
+            "Re-run setup with the interpreter that has voiccce installed, e.g. "
+            "`python -m agent_voice ... setup` from the voiccce virtualenv, "
+            "or `pipx run --spec voiccce voiccce setup`."
         )

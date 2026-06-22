@@ -9,12 +9,12 @@ from agent_voice.secrets import get_dotenv_secret, resolve_openai_api_key
 
 class SecretTests(unittest.TestCase):
     def test_env_key_wins(self) -> None:
-        env_name = "AGENT_CHIME_TEST_OPENAI_KEY"
+        env_name = "VOICCCE_TEST_OPENAI_KEY"
         os.environ[env_name] = "test-key"
         try:
             config = AgentVoiceConfig(
                 voice_api_key_env=env_name,
-                voice_api_key_keychain_service="agent-chime-test-unused",
+                voice_api_key_keychain_service="voiccce-test-unused",
                 voice_api_key_keychain_account="openai-test-unused",
             )
 
@@ -27,7 +27,7 @@ class SecretTests(unittest.TestCase):
             os.environ.pop(env_name, None)
 
     def test_dotenv_key_is_used_after_env(self) -> None:
-        env_name = "AGENT_CHIME_TEST_OPENAI_KEY"
+        env_name = "VOICCCE_TEST_OPENAI_KEY"
         os.environ.pop(env_name, None)
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.toml"
@@ -36,7 +36,7 @@ class SecretTests(unittest.TestCase):
             config = AgentVoiceConfig(
                 config_path=config_path,
                 voice_api_key_env=env_name,
-                voice_api_key_keychain_service="agent-chime-test-unused",
+                voice_api_key_keychain_service="voiccce-test-unused",
                 voice_api_key_keychain_account="openai-test-unused",
             )
 

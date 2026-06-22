@@ -3,12 +3,12 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-chime"
+name = "voiccce"
 version = "0.1.0"
 description = "Session-aware voice and desktop notifications for AI coding agents."
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{ name = "Agent Chime" }]
+authors = [{ name = "Voiccce" }]
 license = "MIT"
 keywords = ["ai", "claude-code", "codex", "notifications", "tts", "voice", "developer-tools"]
 classifiers = [
@@ -28,11 +28,16 @@ menubar = ["pyobjc-framework-Cocoa>=10"]
 pricing = ["tiktoken>=0.7"]
 
 [project.scripts]
+voiccce = "agent_voice.cli:main"
 agent-chime = "agent_voice.cli:main"
 agent-voice = "agent_voice.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["agent_voice*"]
 
+[tool.setuptools.package-data]
+agent_voice = ["assets/menubar/*.svg"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

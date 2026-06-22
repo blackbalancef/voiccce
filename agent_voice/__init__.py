@@ -1,3 +1,3 @@
-"""Agent Chime package."""
+"""Voiccce package."""
 
 __version__ = "0.1.0"

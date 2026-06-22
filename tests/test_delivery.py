@@ -6,19 +6,29 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent_voice.config import AgentVoiceConfig
-from agent_voice.delivery.router import DeliveryResult, DeliveryRouter
+from agent_voice.delivery.router import DEFAULT_TEST_MESSAGE, DeliveryResult, DeliveryRouter, test_message
 from agent_voice.runtime import read_voice_activity_started_at, request_voice_stop, set_voice_mute
+
+
+class TestMessageTests(unittest.TestCase):
+    def test_uses_template_when_present(self) -> None:
+        config = AgentVoiceConfig(message_templates={"en": {"test": "Custom check."}}, language="en")
+        self.assertEqual(test_message(config), "Custom check.")
+
+    def test_falls_back_when_template_missing(self) -> None:
+        config = AgentVoiceConfig(message_templates={}, language="en")
+        self.assertEqual(test_message(config), DEFAULT_TEST_MESSAGE)
 
 
 class DeliveryTests(unittest.TestCase):
     def test_openai_tts_reports_missing_api_key(self) -> None:
-        env_name = "AGENT_CHIME_TEST_OPENAI_KEY"
+        env_name = "VOICCCE_TEST_OPENAI_KEY"
         os.environ.pop(env_name, None)
         config = AgentVoiceConfig(
             voice_backend="openai_tts",
             voice_name="marin",
             voice_api_key_env=env_name,
-            voice_api_key_keychain_service="agent-chime-test-missing",
+            voice_api_key_keychain_service="voiccce-test-missing",
             voice_api_key_keychain_account="openai-test-missing",
         )
 

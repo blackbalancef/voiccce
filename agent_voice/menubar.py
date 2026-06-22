@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -10,14 +11,17 @@ try:
     from AppKit import (
         NSApplication,
         NSApplicationActivationPolicyAccessory,
-        NSBezierPath,
-        NSColor,
+        NSButton,
+        NSFont,
         NSImageLeft,
         NSImage,
         NSMenu,
         NSMenuItem,
+        NSSlider,
         NSStatusBar,
+        NSTextField,
         NSVariableStatusItemLength,
+        NSView,
     )
     from Foundation import NSObject, NSTimer
     from PyObjCTools import AppHelper
@@ -25,14 +29,17 @@ except Exception as exc:  # pragma: no cover - platform dependent
     objc = None
     NSApplication = None
     NSApplicationActivationPolicyAccessory = None
-    NSBezierPath = None
-    NSColor = None
+    NSButton = None
+    NSFont = None
     NSImageLeft = None
     NSImage = None
     NSMenu = None
     NSMenuItem = None
+    NSSlider = None
     NSStatusBar = None
+    NSTextField = None
     NSVariableStatusItemLength = None
+    NSView = None
     NSObject = object
     NSTimer = None
     AppHelper = None
@@ -55,6 +62,7 @@ from .config import (
     set_summary_config,
     set_voice_config,
 )
+from .delivery import DeliveryRouter, test_message
 from .runtime import (
     clear_voice_mute,
     clear_voice_pid,
@@ -82,16 +90,62 @@ CHANNEL_LABELS = {"openai_tts": "OpenAI", "macos_say": "say"}
 
 
 MENU_BAR_ICON_SIZE = 22.0
-ROUND_LINE_CAP_STYLE = 1
-ROUND_LINE_JOIN_STYLE = 1
-ACTIVITY_FRAME_INTERVAL_SECONDS = 0.35
-ACTIVITY_WAVE_HEIGHTS = (
-    (2.0, 5.0, 3.0),
-    (3.5, 2.0, 5.0),
-    (5.0, 3.5, 2.0),
-    (3.0, 5.0, 3.5),
-)
-STATIC_WAVE_HEIGHTS = (2.0, 5.0, 2.0)
+MENU_BAR_ICON_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "menubar"
+ACTIVITY_FRAME_INTERVAL_SECONDS = 0.2
+ACTIVITY_ICON_STATES = ("speaking-1", "speaking-2", "speaking-3", "speaking-2")
+VOICE_SPEED_MIN = 0.25
+VOICE_SPEED_MAX = 4.0
+VOICE_SPEED_STEP = 0.05
+VOICE_SPEED_SLIDER_WIDTH = 320.0
+VOICE_SPEED_SLIDER_HEIGHT = 88.0
+# One shared horizontal inset so the label, slider, and preset buttons line up.
+VOICE_SPEED_CONTENT_INSET = 20.0
+VOICE_SPEED_BUTTON_GAP = 8.0
+VOICE_SPEED_PRESETS = (1.0, 1.5, 2.0)
+# Slider value is carried on preset buttons via setTag_ (int), scaled by this factor.
+VOICE_SPEED_TAG_SCALE = 100
+# Raw NSEventType values; constant across AppKit and available without Cocoa.
+LEFT_MOUSE_DOWN_EVENT_TYPE = 1
+LEFT_MOUSE_DRAGGED_EVENT_TYPE = 6
+
+
+def menu_voice_speed_value(speed: float) -> float:
+    clamped = min(max(float(speed), VOICE_SPEED_MIN), VOICE_SPEED_MAX)
+    steps = round((clamped - VOICE_SPEED_MIN) / VOICE_SPEED_STEP)
+    return round(VOICE_SPEED_MIN + steps * VOICE_SPEED_STEP, 2)
+
+
+def format_voice_speed(speed: float) -> str:
+    return f"{menu_voice_speed_value(speed):.2f}x"
+
+
+def voice_speed_label(speed: float) -> str:
+    return f"Speed: {format_voice_speed(speed)}"
+
+
+def format_speed_preset(speed: float) -> str:
+    text = f"{float(speed):g}"
+    return f"{text}×"
+
+
+def speed_to_tag(speed: float) -> int:
+    return round(float(speed) * VOICE_SPEED_TAG_SCALE)
+
+
+def tag_to_speed(tag: int) -> float:
+    return tag / VOICE_SPEED_TAG_SCALE
+
+
+def is_slider_commit_event_type(event_type: int | None) -> bool:
+    """Whether a slider action should persist the value (vs. only update the label).
+
+    Continuous sliders fire on every drag tick; we persist and restart the daemon
+    only when the interaction settles — on mouse-up or keyboard adjustment — never
+    mid-drag.
+    """
+    if event_type is None:
+        return True
+    return event_type not in (LEFT_MOUSE_DOWN_EVENT_TYPE, LEFT_MOUSE_DRAGGED_EVENT_TYPE)
 
 
 def format_countdown(seconds: int) -> str:
@@ -128,6 +182,11 @@ class AgentVoiceMenuBar(NSObject):
         self.animation_frame_index = 0
         self.active_voice_pid = None
         self.voice_activity_active = False
+        self.menu_open = False
+        self.speed_label = None
+        self.speed_slider = None
+        self.last_shown_speed = None
+        self.test_playing = False
         self.status_images = {
             False: self._make_status_image(muted=False),
             True: self._make_status_image(muted=True),
@@ -170,9 +229,12 @@ class AgentVoiceMenuBar(NSObject):
             voice_pid=voice_pid,
             voice_active=voice_active,
         )
-        self.status_item.setMenu_(
-            self._build_menu(config, voice_pid=voice_pid, voice_active=voice_active)
-        )
+        # Never swap the menu while the user has it open — doing so freezes the
+        # popover and resets controls (e.g. the speed slider) mid-interaction.
+        if not self.menu_open:
+            self.status_item.setMenu_(
+                self._build_menu(config, voice_pid=voice_pid, voice_active=voice_active)
+            )
         self.active_voice_pid = voice_pid
         self.voice_activity_active = voice_active
 
@@ -181,9 +243,7 @@ class AgentVoiceMenuBar(NSObject):
         config = load_config(self.config_path)
         mute_status = voice_mute_status(config)
         voice_pid, voice_active = self._voice_activity(config)
-        if voice_active:
-            self.animation_frame_index = (self.animation_frame_index + 1) % len(ACTIVITY_WAVE_HEIGHTS)
-        else:
+        if not voice_active:
             self.animation_frame_index = 0
         self._update_status_button(
             muted=mute_status.muted,
@@ -191,7 +251,12 @@ class AgentVoiceMenuBar(NSObject):
             voice_pid=voice_pid,
             voice_active=voice_active,
         )
-        if voice_pid != self.active_voice_pid or voice_active != self.voice_activity_active:
+        if voice_active:
+            self.animation_frame_index = (self.animation_frame_index + 1) % len(ACTIVITY_ICON_STATES)
+        if (
+            not self.menu_open
+            and (voice_pid != self.active_voice_pid or voice_active != self.voice_activity_active)
+        ):
             self.status_item.setMenu_(
                 self._build_menu(config, voice_pid=voice_pid, voice_active=voice_active)
             )
@@ -216,13 +281,13 @@ class AgentVoiceMenuBar(NSObject):
             frames = self.activity_images[muted]
             image = frames[self.animation_frame_index % len(frames)]
             tooltip = (
-                f"Agent Chime: speaking ({voice_pid})"
+                f"Voiccce: speaking ({voice_pid})"
                 if voice_pid
-                else "Agent Chime: preparing voice"
+                else "Voiccce: preparing voice"
             )
         else:
             image = self.status_images[muted]
-            tooltip = f"Agent Chime: muted for {mute_remaining}" if mute_remaining else "Agent Chime"
+            tooltip = f"Voiccce: muted for {mute_remaining}" if mute_remaining else "Voiccce"
         button.setImage_(image)
         button.setImagePosition_(NSImageLeft)
         button.setToolTip_(tooltip)
@@ -244,69 +309,29 @@ class AgentVoiceMenuBar(NSObject):
 
     @_python_method
     def _make_status_image(self, *, muted: bool, activity_phase: int | None = None) -> object:
-        image = NSImage.alloc().initWithSize_((MENU_BAR_ICON_SIZE, MENU_BAR_ICON_SIZE))
-        image.lockFocus()
-        try:
-            NSColor.blackColor().set()
-            self._draw_voice_bubble(activity_phase=activity_phase)
-            if muted:
-                self._draw_mute_slash()
-        finally:
-            image.unlockFocus()
-        image.setTemplate_(True)
-        return image
+        if muted:
+            return self._make_icon_asset("muted")
+        if activity_phase is None:
+            return self._make_icon_asset("listening")
+        state = ACTIVITY_ICON_STATES[activity_phase % len(ACTIVITY_ICON_STATES)]
+        return self._make_icon_asset(state)
 
     @_python_method
     def _make_activity_images(self, *, muted: bool) -> list[object]:
         return [
             self._make_status_image(muted=muted, activity_phase=phase)
-            for phase in range(len(ACTIVITY_WAVE_HEIGHTS))
+            for phase in range(len(ACTIVITY_ICON_STATES))
         ]
 
     @_python_method
-    def _draw_voice_bubble(self, *, activity_phase: int | None = None) -> None:
-        bubble = NSBezierPath.bezierPath()
-        bubble.setLineWidth_(1.55)
-        bubble.setLineCapStyle_(ROUND_LINE_CAP_STYLE)
-        bubble.setLineJoinStyle_(ROUND_LINE_JOIN_STYLE)
-        bubble.moveToPoint_((5.6, 5.5))
-        bubble.lineToPoint_((7.5, 5.5))
-        bubble.lineToPoint_((9.4, 3.6))
-        bubble.lineToPoint_((9.8, 5.5))
-        bubble.lineToPoint_((16.3, 5.5))
-        bubble.curveToPoint_controlPoint1_controlPoint2_((18.5, 7.6), (17.7, 5.5), (18.5, 6.3))
-        bubble.lineToPoint_((18.5, 14.1))
-        bubble.curveToPoint_controlPoint1_controlPoint2_((16.2, 16.4), (18.5, 15.5), (17.6, 16.4))
-        bubble.lineToPoint_((5.8, 16.4))
-        bubble.curveToPoint_controlPoint1_controlPoint2_((3.5, 14.1), (4.4, 16.4), (3.5, 15.5))
-        bubble.lineToPoint_((3.5, 7.8))
-        bubble.curveToPoint_controlPoint1_controlPoint2_((5.6, 5.5), (3.5, 6.4), (4.3, 5.5))
-        bubble.stroke()
-
-        heights = STATIC_WAVE_HEIGHTS if activity_phase is None else ACTIVITY_WAVE_HEIGHTS[activity_phase]
-        self._draw_waveform(heights)
-
-    @_python_method
-    def _draw_waveform(self, heights: tuple[float, float, float]) -> None:
-        center_y = 11.0
-        x_positions = (7.7, 11.0, 14.3)
-        wave = NSBezierPath.bezierPath()
-        wave.setLineWidth_(1.75)
-        wave.setLineCapStyle_(ROUND_LINE_CAP_STYLE)
-        for x_position, height in zip(x_positions, heights, strict=True):
-            half_height = height / 2.0
-            wave.moveToPoint_((x_position, center_y - half_height))
-            wave.lineToPoint_((x_position, center_y + half_height))
-        wave.stroke()
-
-    @_python_method
-    def _draw_mute_slash(self) -> None:
-        slash = NSBezierPath.bezierPath()
-        slash.setLineWidth_(2.0)
-        slash.setLineCapStyle_(ROUND_LINE_CAP_STYLE)
-        slash.moveToPoint_((4.8, 17.0))
-        slash.lineToPoint_((17.2, 4.8))
-        slash.stroke()
+    def _make_icon_asset(self, state: str) -> object:
+        path = MENU_BAR_ICON_ASSET_DIR / f"bat-{state}.svg"
+        image = NSImage.alloc().initWithContentsOfFile_(str(path))
+        if image is None:
+            raise RuntimeError(f"Could not load menu bar icon asset: {path}")
+        image.setSize_((MENU_BAR_ICON_SIZE, MENU_BAR_ICON_SIZE))
+        image.setTemplate_(True)
+        return image
 
     @_python_method
     def _build_menu(
@@ -317,6 +342,9 @@ class AgentVoiceMenuBar(NSObject):
         voice_active: bool | None = None,
     ) -> object:
         menu = NSMenu.alloc().init()
+        menu.setDelegate_(self)
+        self.speed_label = None
+        self.speed_slider = None
         daemon_pid, daemon_running = daemon_status(config)
         mute_status = voice_mute_status(config)
         if voice_pid is None or voice_active is None:
@@ -399,6 +427,9 @@ class AgentVoiceMenuBar(NSObject):
                     "selectTtsModel:",
                 )
             )
+            menu.addItem_(self._voice_speed_slider_item(config))
+
+        menu.addItem_(self._item("▶ Play test audio", "playTestAudio:"))
 
         summary_choices = self._choices_with_current(SUMMARY_MODEL_CHOICES, config.summary_model)
         menu.addItem_(
@@ -454,6 +485,70 @@ class AgentVoiceMenuBar(NSObject):
             submenu.addItem_(child)
         parent.setSubmenu_(submenu)
         return parent
+
+    @_python_method
+    def _voice_speed_slider_item(self, config) -> object:
+        title = voice_speed_label(config.voice_speed)
+        if NSView is None or NSTextField is None or NSSlider is None:
+            return self._item(title, enabled=False)
+
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+        view = NSView.alloc().initWithFrame_(
+            ((0.0, 0.0), (VOICE_SPEED_SLIDER_WIDTH, VOICE_SPEED_SLIDER_HEIGHT))
+        )
+
+        inset = VOICE_SPEED_CONTENT_INSET
+        content_width = VOICE_SPEED_SLIDER_WIDTH - inset * 2
+
+        label = NSTextField.labelWithString_(title)
+        label.setFrame_(((inset, 66.0), (content_width, 16.0)))
+        if NSFont is not None:
+            label.setFont_(NSFont.menuFontOfSize_(0.0))
+        view.addSubview_(label)
+        # Held so the slider action can update the number live during a drag.
+        self.speed_label = label
+        self.last_shown_speed = menu_voice_speed_value(config.voice_speed)
+
+        slider = NSSlider.alloc().initWithFrame_(((inset, 42.0), (content_width, 20.0)))
+        slider.setMinValue_(VOICE_SPEED_MIN)
+        slider.setMaxValue_(VOICE_SPEED_MAX)
+        slider.setDoubleValue_(menu_voice_speed_value(config.voice_speed))
+        slider.setTarget_(self)
+        slider.setAction_("voiceSpeedChanged:")
+        slider.setContinuous_(True)
+        slider.setToolTip_("OpenAI TTS speed")
+        view.addSubview_(slider)
+        self.speed_slider = slider
+
+        self._add_speed_preset_buttons(view)
+
+        item.setView_(view)
+        return item
+
+    @_python_method
+    def _add_speed_preset_buttons(self, view: object) -> None:
+        if NSButton is None:
+            return
+        inset = VOICE_SPEED_CONTENT_INSET
+        gap = VOICE_SPEED_BUTTON_GAP
+        content_width = VOICE_SPEED_SLIDER_WIDTH - inset * 2
+        count = len(VOICE_SPEED_PRESETS)
+        button_width = (content_width - gap * (count - 1)) / count
+        for index, preset in enumerate(VOICE_SPEED_PRESETS):
+            x = inset + index * (button_width + gap)
+            button = NSButton.alloc().initWithFrame_(((x, 10.0), (button_width, 22.0)))
+            button.setTitle_(format_speed_preset(preset))
+            button.setBezelStyle_(1)  # NSBezelStyleRounded
+            button.setTarget_(self)
+            button.setAction_("voiceSpeedPreset:")
+            button.setTag_(speed_to_tag(preset))
+            button.setToolTip_(f"Set speed to {format_voice_speed(preset)}")
+            if NSFont is not None:
+                button.setFont_(NSFont.systemFontOfSize_(11.0))
+            cell = button.cell()
+            if cell is not None:
+                cell.setControlSize_(1)  # NSControlSizeSmall
+            view.addSubview_(button)
 
     @_python_method
     def _read_last_voice_channel(self, config) -> str | None:
@@ -571,6 +666,85 @@ class AgentVoiceMenuBar(NSObject):
         self._log(f"TTS model set to {model}")
         self.refresh()
 
+    def voiceSpeedChanged_(self, sender) -> None:
+        speed = menu_voice_speed_value(float(sender.doubleValue()))
+        # A continuous slider fires on every pixel of travel; only redraw the label
+        # when the quantized value actually changes, otherwise dragging spams the
+        # main thread with redundant relayouts and stutters.
+        if speed != self.last_shown_speed:
+            self.last_shown_speed = speed
+            if self.speed_label is not None:
+                self.speed_label.setStringValue_(voice_speed_label(speed))
+        # Live drag ticks only redraw the label; persist once the drag settles so we
+        # restart the daemon a single time instead of on every intermediate value.
+        if not is_slider_commit_event_type(self._current_event_type()):
+            return
+        sender.setDoubleValue_(speed)
+        self._persist_voice_speed(speed)
+
+    def voiceSpeedPreset_(self, sender) -> None:
+        speed = menu_voice_speed_value(tag_to_speed(sender.tag()))
+        self.last_shown_speed = speed
+        if self.speed_label is not None:
+            self.speed_label.setStringValue_(voice_speed_label(speed))
+        if self.speed_slider is not None:
+            self.speed_slider.setDoubleValue_(speed)
+        self._persist_voice_speed(speed)
+
+    @_python_method
+    def _persist_voice_speed(self, speed: float) -> None:
+        config = self._config()
+        if speed == config.voice_speed:
+            return
+        set_voice_config(config.config_path, speed=speed)
+        # No daemon restart: it hot-reloads config each poll cycle, so the new speed
+        # applies within ~0.5s without freezing the menu on every slider release.
+        self._log(f"Voice speed set to {format_voice_speed(speed)}")
+
+    @_python_method
+    def _current_event_type(self) -> int | None:
+        if NSApplication is None:
+            return None
+        event = NSApplication.sharedApplication().currentEvent()
+        return None if event is None else int(event.type())
+
+    def menuWillOpen_(self, menu) -> None:
+        self.menu_open = True
+
+    def menuDidClose_(self, menu) -> None:
+        self.menu_open = False
+
+    def playTestAudio_(self, sender) -> None:
+        if self.test_playing:
+            self._log("Test audio already playing")
+            return
+        self.test_playing = True
+        # TTS synthesis + playback take seconds — run off the main thread so the menu
+        # never freezes while testing the current voice/speed.
+        thread = threading.Thread(target=self._run_test_audio, daemon=True)
+        thread.start()
+
+    @_python_method
+    def _run_test_audio(self) -> None:
+        try:
+            config = self._config()
+            self._log(
+                f"Playing test audio (voice {config.voice_name or '—'}, "
+                f"{format_voice_speed(config.voice_speed)})"
+            )
+            results = DeliveryRouter(config).deliver(test_message(config))
+            if any(result.spoken for result in results):
+                self._log("Test audio played")
+            else:
+                channel = results[-1].channel if results else "none"
+                error = next((result.error for result in results if result.error), None)
+                detail = f": {error}" if error else ""
+                self._log(f"Test audio not spoken (channel {channel}{detail})")
+        except Exception as exc:
+            self._log(f"Test audio failed: {exc}")
+        finally:
+            self.test_playing = False
+
     def selectSummaryModel_(self, sender) -> None:
         model = str(sender.representedObject())
         config = self._config()
@@ -621,14 +795,14 @@ class AgentVoiceMenuBar(NSObject):
 
     @_python_method
     def _log(self, message: str) -> None:
-        print(f"[agent-chime menubar] {datetime.now().isoformat(timespec='seconds')} {message}", flush=True)
+        print(f"[voiccce menubar] {datetime.now().isoformat(timespec='seconds')} {message}", flush=True)
 
 
 def run_menubar(config_path: str | Path | None = None) -> None:
     if _IMPORT_ERROR is not None:
         raise RuntimeError(
             "Menu bar requires pyobjc-framework-Cocoa. Install with "
-            "`pip install pyobjc-framework-Cocoa` or `pipx inject agent-chime pyobjc-framework-Cocoa`."
+            "`pip install pyobjc-framework-Cocoa` or `pipx inject voiccce pyobjc-framework-Cocoa`."
         ) from _IMPORT_ERROR
 
     app = NSApplication.sharedApplication()

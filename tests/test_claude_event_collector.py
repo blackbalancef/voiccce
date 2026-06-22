@@ -20,7 +20,7 @@ class ClaudeEventCollectorTests(unittest.TestCase):
                 encoding="utf-8",
             )
             payload = {
-                "cwd": "/tmp/agent-chime",
+                "cwd": "/tmp/voiccce",
                 "session_id": "s1",
                 "transcript_path": str(transcript),
                 "last_assistant_message": "clipped preview...",
@@ -32,7 +32,7 @@ class ClaudeEventCollectorTests(unittest.TestCase):
 
     def test_stop_event_falls_back_to_payload_when_transcript_missing(self) -> None:
         payload = {
-            "cwd": "/tmp/agent-chime",
+            "cwd": "/tmp/voiccce",
             "session_id": "s1",
             "transcript_path": "/nonexistent/transcript.jsonl",
             "last_assistant_message": "payload message text",
@@ -44,7 +44,7 @@ class ClaudeEventCollectorTests(unittest.TestCase):
 
     def test_stop_event_summarizes_last_assistant_message(self) -> None:
         payload = {
-            "cwd": "/tmp/agent-chime",
+            "cwd": "/tmp/voiccce",
             "session_id": "s1",
             "last_assistant_message": (
                 "Done.\n\n"

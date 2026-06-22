@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from agent_voice.config import (
+    AgentVoiceConfig,
     load_config,
     set_config_language,
     set_events_config,
@@ -22,6 +23,31 @@ class ConfigTests(unittest.TestCase):
 
             set_config_language(config_path, "english")
             self.assertEqual(load_config(config_path).language, "en")
+
+    def test_set_config_language_accepts_russian(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+
+            set_config_language(config_path, "ru")
+            self.assertEqual(load_config(config_path).language, "ru")
+
+            set_config_language(config_path, "russian")
+            self.assertEqual(load_config(config_path).language, "ru")
+
+            set_config_language(config_path, "русский")
+            self.assertEqual(load_config(config_path).language, "ru")
+
+    def test_default_message_templates_include_russian(self) -> None:
+        config = AgentVoiceConfig()
+
+        self.assertEqual(
+            set(config.message_templates["ru"]),
+            set(config.message_templates["en"]),
+        )
+        self.assertEqual(
+            config.message_templates["ru"]["completed"],
+            "Сессия {project} полностью завершена.",
+        )
 
     def test_set_voice_config_updates_backend(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

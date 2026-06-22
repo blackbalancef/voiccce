@@ -41,7 +41,7 @@ class PiInstallerTests(unittest.TestCase):
                 repo_root=Path.cwd(),
                 pi_home=root / "pi-home",
                 config_path=root / "config.toml",
-                wrapper_path=root / "bin" / "agent-chime-pi-hook",
+                wrapper_path=root / "bin" / "voiccce-pi-hook",
                 python_executable=sys.executable,
                 verify=True,
             )
@@ -49,7 +49,7 @@ class PiInstallerTests(unittest.TestCase):
             self.assertTrue(result.extension_path.exists())
             self.assertEqual(
                 result.extension_path,
-                (root / "pi-home" / "agent" / "extensions" / "agent-chime.ts").resolve(),
+                (root / "pi-home" / "agent" / "extensions" / "voiccce.ts").resolve(),
             )
 
             ext = result.extension_path.read_text(encoding="utf-8")
@@ -60,6 +60,26 @@ class PiInstallerTests(unittest.TestCase):
 
             wrapper = result.wrapper_path.read_text(encoding="utf-8")
             self.assertIn("collect pi --hook", wrapper)
+
+    def test_install_removes_legacy_generated_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pi_home = root / "pi-home"
+            legacy_extension = pi_home / "agent" / "extensions" / "agent-chime.ts"
+            legacy_extension.parent.mkdir(parents=True)
+            legacy_extension.write_text("// AGENT_CHIME=1 old generated extension\n", encoding="utf-8")
+
+            install_pi_personal(
+                repo_root=Path.cwd(),
+                pi_home=pi_home,
+                config_path=root / "config.toml",
+                wrapper_path=root / "bin" / "voiccce-pi-hook",
+                python_executable=sys.executable,
+                verify=True,
+            )
+
+            self.assertFalse(legacy_extension.exists())
+            self.assertTrue((pi_home / "agent" / "extensions" / "voiccce.ts").exists())
 
 
 class PiCollectCliTests(unittest.TestCase):

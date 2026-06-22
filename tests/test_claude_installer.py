@@ -27,6 +27,14 @@ class ClaudeInstallerTests(unittest.TestCase):
                                             "command": "bash existing.sh",
                                         }
                                     ]
+                                },
+                                {
+                                    "hooks": [
+                                        {
+                                            "type": "command",
+                                            "command": "AGENT_CHIME=1 /old/agent-chime-claude-hook Stop",
+                                        }
+                                    ]
                                 }
                             ]
                         }
@@ -58,6 +66,7 @@ class ClaudeInstallerTests(unittest.TestCase):
                 for hook in entry.get("hooks", [])
             ]
             self.assertIn("bash existing.sh", commands)
+            self.assertFalse(any("AGENT_CHIME=1" in command for command in commands))
             self.assertEqual(sum(MARKER in command for command in commands), 1)
             self.assertTrue(first.backup_path.exists())
             self.assertTrue(second.backup_path.exists())

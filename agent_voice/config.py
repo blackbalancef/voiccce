@@ -14,10 +14,16 @@ from .tts_cost import (
 )
 
 
-DEFAULT_HOME = Path.home() / ".agent-chime"
+DEFAULT_HOME = Path.home() / ".voiccce"
 DEFAULT_CONFIG_PATH = DEFAULT_HOME / "config.toml"
 DEFAULT_DB_PATH = DEFAULT_HOME / "events.sqlite3"
-SUPPORTED_LANGUAGES = ("en",)
+SUPPORTED_LANGUAGES = ("en", "ru")
+# Human-readable language names injected into the summary prompt so the model is
+# instructed to write in the configured language ("Russian") rather than a code.
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "ru": "Russian",
+}
 SUMMARY_PRIVACY_LEVELS = ("metadata_only", "full_last_message")
 SUMMARY_PROVIDERS = ("fallback", "openai")
 DEFAULT_SUMMARY_MODEL = "gpt-5.4-nano"
@@ -46,7 +52,7 @@ DEFAULT_SUMMARY_CACHED_INPUT_PRICE_PER_MILLION_TOKENS_USD = 0.02
 DEFAULT_SUMMARY_TEXT_OUTPUT_PRICE_PER_MILLION_TOKENS_USD = 1.25
 DEFAULT_SUMMARY_MAX_INPUT_CHARS = 6000
 DEFAULT_SUMMARY_PROMPT = """Rewrite the final assistant update into one natural spoken notification.
-Write in the same language as the final assistant update below.
+Write the notification in {language_name}, regardless of the language of the update below — translate it if needed.
 Project: {project}
 Agent: {agent}
 Status: {status}
@@ -94,7 +100,7 @@ cached_input_price_per_million_tokens_usd = 0.02
 text_output_price_per_million_tokens_usd = 1.25
 prompt = '''
 Rewrite the final assistant update into one natural spoken notification.
-Write in the same language as the final assistant update below.
+Write the notification in {language_name}, regardless of the language of the update below — translate it if needed.
 Project: {project}
 Agent: {agent}
 Status: {status}
@@ -114,6 +120,7 @@ attention_required = "{agent} in {project} needs attention{reason_clause}."
 completed = "Session {project} is fully complete."
 completed_with_summary = "Session {project} is fully complete. Summary: {summary}."
 handled = "Event in {project} was handled."
+test = "Voiccce is working."
 idle_reminder = "Just a reminder: {project} is done and waiting for your reply — within about {minutes} minutes, while {agent}'s cache is still warm."
 grouped_prefix = "Updates: {items}."
 grouped_many = "{count} sessions: {summary}."
@@ -124,6 +131,25 @@ grouped_attention_count = "{count} need attention"
 grouped_failed_count = "{count} failed"
 grouped_completed_count = "{count} completed"
 grouped_updates_count = "{count} updates"
+
+[messages.ru]
+failed = "{agent} в проекте {project} завершился с ошибкой{reason_clause}."
+permission_needed = "{agent} в проекте {project} запрашивает разрешение{reason_clause}."
+attention_required = "{agent} в проекте {project} требует внимания{reason_clause}."
+completed = "Сессия {project} полностью завершена."
+completed_with_summary = "Сессия {project} полностью завершена. Итог: {summary}."
+handled = "Событие в проекте {project} обработано."
+test = "Voiccce работает."
+idle_reminder = "Напоминаю: {project} завершён и ждёт твоего ответа — примерно в течение {minutes} минут, пока кэш {agent} ещё тёплый."
+grouped_prefix = "Обновления: {items}."
+grouped_many = "Сессий: {count}. {summary}."
+grouped_failed_fragment = "{project} — ошибка"
+grouped_attention_fragment = "{project} требует внимания"
+grouped_completed_fragment = "{project} завершён"
+grouped_attention_count = "{count} требуют внимания"
+grouped_failed_count = "{count} с ошибкой"
+grouped_completed_count = "{count} завершено"
+grouped_updates_count = "{count} обновлений"
 
 [voice]
 enabled = true
@@ -138,7 +164,7 @@ text_input_price_per_million_tokens_usd = 0.60
 audio_output_price_per_million_tokens_usd = 12.00
 audio_tokens_per_second = 20.833333
 api_key_env = "OPENAI_API_KEY"
-api_key_keychain_service = "agent-chime"
+api_key_keychain_service = "voiccce"
 api_key_keychain_account = "openai"
 instructions = "Speak naturally, calmly, and briefly. This is a short developer notification."
 timeout_seconds = 15
@@ -179,6 +205,7 @@ DEFAULT_MESSAGE_TEMPLATES: dict[str, dict[str, str]] = {
         "completed": "Session {project} is fully complete.",
         "completed_with_summary": "Session {project} is fully complete. Summary: {summary}.",
         "handled": "Event in {project} was handled.",
+        "test": "Voiccce is working.",
         "idle_reminder": "Just a reminder: {project} is done and waiting for your reply — within about {minutes} minutes, while {agent}'s cache is still warm.",
         "grouped_prefix": "Updates: {items}.",
         "grouped_many": "{count} sessions: {summary}.",
@@ -189,6 +216,25 @@ DEFAULT_MESSAGE_TEMPLATES: dict[str, dict[str, str]] = {
         "grouped_failed_count": "{count} failed",
         "grouped_completed_count": "{count} completed",
         "grouped_updates_count": "{count} updates",
+    },
+    "ru": {
+        "failed": "{agent} в проекте {project} завершился с ошибкой{reason_clause}.",
+        "permission_needed": "{agent} в проекте {project} запрашивает разрешение{reason_clause}.",
+        "attention_required": "{agent} в проекте {project} требует внимания{reason_clause}.",
+        "completed": "Сессия {project} полностью завершена.",
+        "completed_with_summary": "Сессия {project} полностью завершена. Итог: {summary}.",
+        "handled": "Событие в проекте {project} обработано.",
+        "test": "Voiccce работает.",
+        "idle_reminder": "Напоминаю: {project} завершён и ждёт твоего ответа — примерно в течение {minutes} минут, пока кэш {agent} ещё тёплый.",
+        "grouped_prefix": "Обновления: {items}.",
+        "grouped_many": "Сессий: {count}. {summary}.",
+        "grouped_failed_fragment": "{project} — ошибка",
+        "grouped_attention_fragment": "{project} требует внимания",
+        "grouped_completed_fragment": "{project} завершён",
+        "grouped_attention_count": "{count} требуют внимания",
+        "grouped_failed_count": "{count} с ошибкой",
+        "grouped_completed_count": "{count} завершено",
+        "grouped_updates_count": "{count} обновлений",
     },
 }
 
@@ -212,7 +258,7 @@ class AgentVoiceConfig:
     voice_audio_output_price_per_million_tokens_usd: float = DEFAULT_TTS_AUDIO_OUTPUT_PRICE_PER_MILLION_TOKENS_USD
     voice_audio_tokens_per_second: float = DEFAULT_TTS_AUDIO_TOKENS_PER_SECOND
     voice_api_key_env: str = "OPENAI_API_KEY"
-    voice_api_key_keychain_service: str = "agent-chime"
+    voice_api_key_keychain_service: str = "voiccce"
     voice_api_key_keychain_account: str = "openai"
     voice_instructions: str = "Speak naturally, calmly, and briefly. This is a short developer notification."
     voice_timeout_seconds: int = 15
@@ -305,7 +351,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AgentVoiceConfig:
         voice_audio_output_price_per_million_tokens_usd=voice_audio_output_price_per_million_tokens_usd,
         voice_audio_tokens_per_second=voice_audio_tokens_per_second,
         voice_api_key_env=voice.get("api_key_env", "OPENAI_API_KEY"),
-        voice_api_key_keychain_service=voice.get("api_key_keychain_service", "agent-chime"),
+        voice_api_key_keychain_service=voice.get("api_key_keychain_service", "voiccce"),
         voice_api_key_keychain_account=voice.get("api_key_keychain_account", "openai"),
         voice_instructions=voice.get(
             "instructions",
@@ -382,6 +428,9 @@ def normalize_language(language: str) -> str:
         "english": "en",
         "en-us": "en",
         "en-gb": "en",
+        "russian": "ru",
+        "русский": "ru",
+        "ru-ru": "ru",
     }
     normalized = aliases.get(value, value)
     if normalized not in SUPPORTED_LANGUAGES:

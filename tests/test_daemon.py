@@ -3,8 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_voice.config import AgentVoiceConfig
-from agent_voice.daemon import process_once
+from agent_voice.config import AgentVoiceConfig, load_config, set_voice_config
+from agent_voice.daemon import maybe_reload_config, process_once
 from agent_voice.db import connect, init_db
 from agent_voice.delivery import DeliveryResult
 from agent_voice.intelligence.summarizer import SummaryResult
@@ -547,6 +547,46 @@ class DaemonTests(unittest.TestCase):
             record = json.loads((Path(tmp) / "summary.log").read_text(encoding="utf-8").splitlines()[-1])
             self.assertTrue(record["grouped"])
             self.assertFalse(record["gpt_used"])
+
+
+class ConfigHotReloadTests(unittest.TestCase):
+    def test_reloads_when_file_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            set_voice_config(config_path, speed=1.0)
+            config = load_config(config_path)
+            self.assertEqual(config.voice_speed, 1.0)
+
+            # Simulate a menu-bar tweak landing on disk.
+            set_voice_config(config_path, speed=1.75)
+
+            new_config, new_mtime = maybe_reload_config(config, config_path, None)
+            self.assertEqual(new_config.voice_speed, 1.75)
+            self.assertIsNotNone(new_mtime)
+
+    def test_does_not_reload_when_mtime_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            set_voice_config(config_path, speed=1.0)
+            config = load_config(config_path)
+            mtime = config_path.stat().st_mtime
+
+            result, result_mtime = maybe_reload_config(config, config_path, mtime)
+
+            self.assertIs(result, config)
+            self.assertEqual(result_mtime, mtime)
+
+    def test_keeps_previous_config_when_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            set_voice_config(config_path, speed=1.0)
+            config = load_config(config_path)
+            config_path.unlink()
+
+            result, result_mtime = maybe_reload_config(config, config_path, 123.0)
+
+            self.assertIs(result, config)
+            self.assertEqual(result_mtime, 123.0)
 
 
 if __name__ == "__main__":

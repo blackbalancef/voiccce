@@ -14,9 +14,11 @@ from agent_voice.installer import verify_wrapper_imports
 
 
 DEFAULT_PI_HOME = Path.home() / ".pi"
-AGENT_CHIME_HOME = Path.home() / ".agent-chime"
-WRAPPER_PATH = AGENT_CHIME_HOME / "bin" / "agent-chime-pi-hook"
-MARKER = "AGENT_CHIME=1"
+VOICCCE_HOME = Path.home() / ".voiccce"
+WRAPPER_PATH = VOICCCE_HOME / "bin" / "voiccce-pi-hook"
+MARKER = "VOICCCE=1"
+LEGACY_MARKER = "AGENT_CHIME=1"
+LEGACY_EXTENSION_NAME = "agent-chime.ts"
 
 # pi auto-discovers global extensions from ~/.pi/agent/extensions/*.ts
 PI_HOOKS = ("Stop", "UserPromptSubmit")
@@ -44,7 +46,7 @@ def install_pi_personal(
     repo_root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
     config_path = config_path.expanduser().resolve()
     pi_home = (pi_home or _default_pi_home()).expanduser().resolve()
-    extension_path = (extension_path or pi_home / "agent" / "extensions" / "agent-chime.ts").expanduser().resolve()
+    extension_path = (extension_path or pi_home / "agent" / "extensions" / "voiccce.ts").expanduser().resolve()
     wrapper_path = wrapper_path.expanduser().resolve()
     python_executable = Path(python_executable or sys.executable).expanduser().resolve()
 
@@ -59,6 +61,7 @@ def install_pi_personal(
     _write_wrapper(wrapper_path, repo_root, config_path, python_executable)
     if verify:
         verify_wrapper_imports(python_executable, repo_root)
+    _remove_legacy_extension(pi_home, extension_path)
     _write_extension(extension_path, wrapper_path)
     return PiInstallResult(
         extension_path=extension_path,
@@ -75,7 +78,7 @@ def _default_pi_home() -> Path:
 
 def _write_wrapper(wrapper_path: Path, repo_root: Path, config_path: Path, python_executable: Path) -> None:
     wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path = AGENT_CHIME_HOME / "hook.log"
+    log_path = VOICCCE_HOME / "hook.log"
     content = f"""#!/usr/bin/env bash
 set -u
 
@@ -98,8 +101,8 @@ def _write_extension(extension_path: Path, wrapper_path: Path) -> None:
     extension_path.parent.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     wrapper_js = _js_string(str(wrapper_path))
-    content = f"""// {MARKER} Agent Chime — pi integration (generated {stamp})
-// Bridges pi lifecycle events to the agent-chime notification daemon.
+    content = f"""// {MARKER} Voiccce — pi integration (generated {stamp})
+// Bridges pi lifecycle events to the voiccce notification daemon.
 // Auto-discovered from ~/.pi/agent/extensions/. Safe to delete to uninstall.
 import {{ spawn }} from "node:child_process";
 
@@ -166,10 +169,22 @@ export default function (pi) {{
       last_assistant_message: lastAssistantText(event),
     }});
   }});
-}}
+    }}
 """
     extension_path.write_text(content, encoding="utf-8")
     extension_path.chmod(0o600)
+
+
+def _remove_legacy_extension(pi_home: Path, extension_path: Path) -> None:
+    legacy_path = (pi_home / "agent" / "extensions" / LEGACY_EXTENSION_NAME).resolve()
+    if legacy_path == extension_path or not legacy_path.exists():
+        return
+    try:
+        content = legacy_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if LEGACY_MARKER in content:
+        legacy_path.unlink(missing_ok=True)
 
 
 def _js_string(value: str) -> str:

@@ -20,7 +20,7 @@ from .config import (
 )
 from .daemon import process_once, run_daemon
 from .db import connect, init_db
-from .delivery import DeliveryRouter
+from .delivery import DeliveryRouter, test_message
 from .hooks.claude_event_collector import read_event_from_stdin as read_claude_event_from_stdin
 from .hooks.codex_event_collector import read_event_from_stdin as read_codex_event_from_stdin
 from .hooks.pi_event_collector import read_event_from_stdin as read_pi_event_from_stdin
@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agent-chime")
+    parser = argparse.ArgumentParser(prog="voiccce")
     parser.add_argument("--config", help="Path to config.toml")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -135,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     status.set_defaults(handler=cmd_status)
 
     config_cmd = subparsers.add_parser("config", help="Show or update local configuration")
-    config_cmd.add_argument("--language", choices=["en"], help="Notification language")
+    config_cmd.add_argument("--language", choices=["en", "ru"], help="Notification language")
     config_cmd.add_argument("--voice-backend", choices=["macos_say", "openai_tts"], help="Voice backend")
     config_cmd.add_argument("--voice", help="Voice name, e.g. Alex, marin, cedar")
     config_cmd.add_argument("--voice-rate", type=int, help="macOS say voice rate")
@@ -196,7 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     enqueue_test = subparsers.add_parser("enqueue-test-event", help="Enqueue a synthetic event")
     enqueue_test.add_argument("--type", default=EventType.TASK_FINISHED.value)
-    enqueue_test.add_argument("--project", default="agent-chime")
+    enqueue_test.add_argument("--project", default="voiccce")
     enqueue_test.add_argument("--session", default="test-session")
     enqueue_test.add_argument("--ask", default=None)
     enqueue_test.set_defaults(handler=cmd_enqueue_test_event)
@@ -331,19 +331,19 @@ def cmd_setup(args: argparse.Namespace) -> None:
     print(f"✓ Daemon started (pid {pid})")
 
     if not args.no_test:
-        results = DeliveryRouter(config).deliver("Agent Chime is ready.")
+        results = DeliveryRouter(config).deliver("Voiccce is ready.")
         if any(result.spoken for result in results):
             print("✓ Test sent — you should hear it now.")
         else:
             error = next((result.error for result in results if result.error), None)
             detail = f" ({error})" if error else ""
-            print(f"! Test could not play audio{detail}. Check `agent-chime status` and your OpenAI key.")
+            print(f"! Test could not play audio{detail}. Check `voiccce status` and your OpenAI key.")
 
     print(f"\nDone. Edit {config.config_path} to customize voice, messages, and summaries.")
     if "claude-code" in installed:
         print("Claude Code: if a session was already open, start a new one so it loads the hooks.")
     if "codex" in installed:
-        print("Codex: open /hooks and trust the Agent Chime hooks; restart codex app-server if it was running.")
+        print("Codex: open /hooks and trust the Voiccce hooks; restart codex app-server if it was running.")
     if "pi" in installed:
         print("pi: restart pi (or run /reload) so it loads the new ~/.pi extension.")
 
@@ -357,7 +357,7 @@ def _setup_install(label: str, install: Callable[..., _InstallResult], **kwargs:
     except json.JSONDecodeError as exc:
         raise SystemExit(
             f"Could not parse your existing {label} (invalid JSON): {exc}. "
-            "Fix or remove the file, then re-run `agent-chime setup`."
+            "Fix or remove the file, then re-run `voiccce setup`."
         )
     except WrapperImportError as exc:
         raise SystemExit(str(exc))
@@ -372,13 +372,13 @@ def _ensure_openai_key(config: AgentVoiceConfig, *, reset: bool) -> None:
         return
     key = getpass.getpass("OpenAI API key: ").strip()
     if not key:
-        raise SystemExit("No key entered. Re-run `agent-chime setup`, or use `--local` for the macOS voice.")
+        raise SystemExit("No key entered. Re-run `voiccce setup`, or use `--local` for the macOS voice.")
     try:
         set_openai_keychain_secret(config, key)
     except RuntimeError as exc:
         raise SystemExit(
             f"Could not save the key to macOS Keychain: {exc}. "
-            "Put it in ~/.agent-chime/.env as OPENAI_API_KEY=... instead."
+            "Put it in ~/.voiccce/.env as OPENAI_API_KEY=... instead."
         )
     print("✓ OpenAI key saved to macOS Keychain")
 
@@ -412,7 +412,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         usage_stats = fetch_usage_stats(conn)
     finally:
         conn.close()
-    print("Agent Chime")
+    print("Voiccce")
     print(f"Database: {config.database_path}")
     print(f"Queue pending: {pending}")
     print(f"Queue processed: {processed}")
@@ -532,8 +532,7 @@ def cmd_unmute(args: argparse.Namespace) -> None:
 
 def cmd_test(args: argparse.Namespace) -> None:
     config = load_config(args.config)
-    message = "Agent Chime is working."
-    DeliveryRouter(config, terminal_only=args.terminal_only).deliver(message)
+    DeliveryRouter(config, terminal_only=args.terminal_only).deliver(test_message(config))
 
 
 def cmd_config(args: argparse.Namespace) -> None:
@@ -631,7 +630,7 @@ def cmd_collect(args: argparse.Namespace) -> None:
             event = read_claude_event_from_stdin(args.hook)
         result = enqueue_event(conn, event)
     except (json.JSONDecodeError, sqlite3.Error) as exc:
-        print(f"agent-chime collect failed: {exc}", file=sys.stderr)
+        print(f"voiccce collect failed: {exc}", file=sys.stderr)
         return
     finally:
         conn.close()

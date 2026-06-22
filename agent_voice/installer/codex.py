@@ -15,9 +15,11 @@ from agent_voice.installer import verify_wrapper_imports
 
 
 DEFAULT_CODEX_HOME = Path.home() / ".codex"
-AGENT_CHIME_HOME = Path.home() / ".agent-chime"
-WRAPPER_PATH = AGENT_CHIME_HOME / "bin" / "agent-chime-codex-hook"
-MARKER = "AGENT_CHIME=1"
+VOICCCE_HOME = Path.home() / ".voiccce"
+WRAPPER_PATH = VOICCCE_HOME / "bin" / "voiccce-codex-hook"
+MARKER = "VOICCCE=1"
+LEGACY_MARKERS = ("AGENT_CHIME=1",)
+ENTRY_MARKERS = (MARKER, *LEGACY_MARKERS)
 
 CODEX_HOOKS = {
     "Stop": {"matcher": None},
@@ -79,7 +81,7 @@ def install_codex_personal(
                     "type": "command",
                     "command": command,
                     "timeout": 30,
-                    "statusMessage": "Queue Agent Chime notification",
+                    "statusMessage": "Queue Voiccce notification",
                 }
             ]
         }
@@ -87,7 +89,7 @@ def install_codex_personal(
             entry["matcher"] = hook_config["matcher"]
 
         existing_entries = hooks.setdefault(hook_name, [])
-        hooks[hook_name] = _without_agent_chime_entries(existing_entries)
+        hooks[hook_name] = _without_voiccce_entries(existing_entries)
         hooks[hook_name].append(entry)
 
     _write_hooks(hooks_path, hooks_config)
@@ -115,7 +117,7 @@ def _read_hooks(hooks_path: Path) -> dict[str, object]:
 def _backup_hooks(hooks_path: Path) -> Path:
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
-    backup_path = hooks_path.with_name(f"{hooks_path.name}.agent-chime-backup.{stamp}")
+    backup_path = hooks_path.with_name(f"{hooks_path.name}.voiccce-backup.{stamp}")
     if hooks_path.exists():
         backup_path.write_text(hooks_path.read_text(encoding="utf-8"), encoding="utf-8")
         backup_path.chmod(hooks_path.stat().st_mode & 0o777)
@@ -127,14 +129,14 @@ def _backup_hooks(hooks_path: Path) -> Path:
 
 def _write_hooks(hooks_path: Path, hooks_config: dict[str, object]) -> None:
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = hooks_path.with_suffix(hooks_path.suffix + ".agent-chime-tmp")
+    tmp_path = hooks_path.with_suffix(hooks_path.suffix + ".voiccce-tmp")
     tmp_path.write_text(json.dumps(hooks_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     existing_mode = hooks_path.stat().st_mode & 0o777 if hooks_path.exists() else 0o600
     tmp_path.chmod(existing_mode)
     os.replace(tmp_path, hooks_path)
 
 
-def _without_agent_chime_entries(entries: object) -> list[object]:
+def _without_voiccce_entries(entries: object) -> list[object]:
     if not isinstance(entries, list):
         return []
     kept = []
@@ -152,7 +154,8 @@ def _entry_contains_marker(entry: object) -> bool:
     if not isinstance(hooks, list):
         return False
     for hook in hooks:
-        if isinstance(hook, dict) and MARKER in str(hook.get("command", "")):
+        command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+        if any(marker in command for marker in ENTRY_MARKERS):
             return True
     return False
 
@@ -164,7 +167,7 @@ def _write_wrapper(
     python_executable: Path,
 ) -> None:
     wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path = AGENT_CHIME_HOME / "hook.log"
+    log_path = VOICCCE_HOME / "hook.log"
     repo_root_value = shlex.quote(str(repo_root))
     config_path_value = shlex.quote(str(config_path))
     log_path_value = shlex.quote(str(log_path))

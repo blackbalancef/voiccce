@@ -46,6 +46,14 @@ class DeliveryResult:
 
 AFINFO_DURATION_RE = re.compile(r"estimated duration:\s*([0-9]+(?:\.[0-9]+)?)\s*sec", re.IGNORECASE)
 
+DEFAULT_TEST_MESSAGE = "Voiccce is working."
+
+
+def test_message(config: AgentVoiceConfig) -> str:
+    """The sample phrase used to check the current voice/speed settings."""
+    templates = config.message_templates.get(config.language, {})
+    return templates.get("test") or DEFAULT_TEST_MESSAGE
+
 
 class DeliveryRouter:
     def __init__(self, config: AgentVoiceConfig, *, terminal_only: bool = False) -> None:
@@ -276,7 +284,7 @@ class DeliveryRouter:
     def _desktop(self, message: str) -> DeliveryResult:
         if shutil.which("osascript") is None:
             return DeliveryResult(channel="macos_notification", delivered=False, error="osascript not found")
-        script = f'display notification "{_escape_applescript(message)}" with title "Agent Chime"'
+        script = f'display notification "{_escape_applescript(message)}" with title "Voiccce"'
         try:
             subprocess.run(["osascript", "-e", script], check=True, timeout=5)
             return DeliveryResult(channel="macos_notification", delivered=True)

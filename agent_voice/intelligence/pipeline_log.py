@@ -5,7 +5,7 @@ the model, the model's raw and cleaned output, and the final spoken text. Writin
 is best-effort and never raises, so logging can never break notification delivery.
 
 The log can contain the full assistant message in plaintext, so it is created with
-owner-only permissions (0600), matching the rest of ``~/.agent-chime``, and is
+owner-only permissions (0600), matching the rest of ``~/.voiccce``, and is
 rotated once it grows past ``MAX_LOG_BYTES`` to avoid unbounded growth.
 """
 

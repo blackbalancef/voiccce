@@ -9,42 +9,42 @@ class FallbackTests(unittest.TestCase):
     def test_attention_message_is_short_and_actionable(self) -> None:
         message = build_single_message(
             agent_name="Codex",
-            project_name="agent-chime",
+            project_name="voiccce",
             status=SessionStatus.ATTENTION_REQUIRED,
             ask_summary="choose implementation",
         )
 
         self.assertEqual(
             message,
-            "Codex in agent-chime needs attention: choose implementation.",
+            "Codex in voiccce needs attention: choose implementation.",
         )
 
     def test_completed_message_says_fully_completed(self) -> None:
         message = build_single_message(
             agent_name="Codex",
-            project_name="agent-chime",
+            project_name="voiccce",
             status=SessionStatus.COMPLETED,
         )
 
-        self.assertEqual(message, "Session agent-chime is fully complete.")
+        self.assertEqual(message, "Session voiccce is fully complete.")
 
     def test_completed_message_includes_final_summary(self) -> None:
         message = build_single_message(
             agent_name="Codex",
-            project_name="agent-chime",
+            project_name="voiccce",
             status=SessionStatus.COMPLETED,
             ask_summary="Done. **Changes:** added voice notifications after completion.",
         )
 
         self.assertEqual(
             message,
-            "Session agent-chime is fully complete. Summary: Changes: added voice notifications after completion.",
+            "Session voiccce is fully complete. Summary: Changes: added voice notifications after completion.",
         )
 
     def test_english_attention_message(self) -> None:
         message = build_single_message(
             agent_name="Codex",
-            project_name="agent-chime",
+            project_name="voiccce",
             status=SessionStatus.ATTENTION_REQUIRED,
             ask_summary="choose implementation",
             language="en",
@@ -52,7 +52,24 @@ class FallbackTests(unittest.TestCase):
 
         self.assertEqual(
             message,
-            "Codex in agent-chime needs attention: choose implementation.",
+            "Codex in voiccce needs attention: choose implementation.",
+        )
+
+    def test_russian_attention_message(self) -> None:
+        from agent_voice.config import DEFAULT_MESSAGE_TEMPLATES
+
+        message = build_single_message(
+            agent_name="Codex",
+            project_name="voiccce",
+            status=SessionStatus.ATTENTION_REQUIRED,
+            ask_summary="выбери реализацию",
+            language="ru",
+            templates=DEFAULT_MESSAGE_TEMPLATES["ru"],
+        )
+
+        self.assertEqual(
+            message,
+            "Codex в проекте voiccce требует внимания: выбери реализацию.",
         )
 
     def test_custom_attention_template(self) -> None:

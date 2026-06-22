@@ -26,6 +26,14 @@ class CodexInstallerTests(unittest.TestCase):
                                             "command": "bash existing.sh",
                                         }
                                     ]
+                                },
+                                {
+                                    "hooks": [
+                                        {
+                                            "type": "command",
+                                            "command": "/usr/bin/env AGENT_CHIME=1 /old/agent-chime-codex-hook Stop",
+                                        }
+                                    ]
                                 }
                             ]
                         }
@@ -57,6 +65,7 @@ class CodexInstallerTests(unittest.TestCase):
                 for hook in entry.get("hooks", [])
             ]
             self.assertIn("bash existing.sh", commands)
+            self.assertFalse(any("AGENT_CHIME=1" in command for command in commands))
             self.assertEqual(sum(MARKER in command for command in commands), 1)
             agent_chime_command = next(command for command in commands if MARKER in command)
             self.assertTrue(agent_chime_command.startswith("/usr/bin/env "))

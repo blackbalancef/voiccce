@@ -16,9 +16,11 @@ from agent_voice.installer import verify_wrapper_imports
 
 
 PERSONAL_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
-AGENT_CHIME_HOME = Path.home() / ".agent-chime"
-WRAPPER_PATH = AGENT_CHIME_HOME / "bin" / "agent-chime-claude-hook"
-MARKER = "AGENT_CHIME=1"
+VOICCCE_HOME = Path.home() / ".voiccce"
+WRAPPER_PATH = VOICCCE_HOME / "bin" / "voiccce-claude-hook"
+MARKER = "VOICCCE=1"
+LEGACY_MARKERS = ("AGENT_CHIME=1",)
+ENTRY_MARKERS = (MARKER, *LEGACY_MARKERS)
 
 CLAUDE_HOOKS = {
     "Stop": {"matcher": None},
@@ -84,7 +86,7 @@ def install_claude_code_personal(
             entry["matcher"] = hook_config["matcher"]
 
         existing_entries = settings["hooks"].setdefault(hook_name, [])
-        settings["hooks"][hook_name] = _without_agent_chime_entries(existing_entries)
+        settings["hooks"][hook_name] = _without_voiccce_entries(existing_entries)
         settings["hooks"][hook_name].append(entry)
 
     _write_settings(settings_path, settings)
@@ -108,7 +110,7 @@ def _read_settings(settings_path: Path) -> dict[str, object]:
 def _backup_settings(settings_path: Path) -> Path:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
-    backup_path = settings_path.with_name(f"{settings_path.name}.agent-chime-backup.{stamp}")
+    backup_path = settings_path.with_name(f"{settings_path.name}.voiccce-backup.{stamp}")
     if settings_path.exists():
         backup_path.write_text(settings_path.read_text(encoding="utf-8"), encoding="utf-8")
         backup_path.chmod(settings_path.stat().st_mode & 0o777)
@@ -119,14 +121,14 @@ def _backup_settings(settings_path: Path) -> Path:
 
 
 def _write_settings(settings_path: Path, settings: dict[str, object]) -> None:
-    tmp_path = settings_path.with_suffix(settings_path.suffix + ".agent-chime-tmp")
+    tmp_path = settings_path.with_suffix(settings_path.suffix + ".voiccce-tmp")
     tmp_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     existing_mode = settings_path.stat().st_mode & 0o777 if settings_path.exists() else 0o600
     tmp_path.chmod(existing_mode)
     os.replace(tmp_path, settings_path)
 
 
-def _without_agent_chime_entries(entries: object) -> list[object]:
+def _without_voiccce_entries(entries: object) -> list[object]:
     if not isinstance(entries, list):
         return []
     kept = []
@@ -144,7 +146,8 @@ def _entry_contains_marker(entry: object) -> bool:
     if not isinstance(hooks, list):
         return False
     for hook in hooks:
-        if isinstance(hook, dict) and MARKER in str(hook.get("command", "")):
+        command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+        if any(marker in command for marker in ENTRY_MARKERS):
             return True
     return False
 
@@ -156,7 +159,7 @@ def _write_wrapper(
     python_executable: Path,
 ) -> None:
     wrapper_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path = AGENT_CHIME_HOME / "hook.log"
+    log_path = VOICCCE_HOME / "hook.log"
     repo_root_value = shlex.quote(str(repo_root))
     config_path_value = shlex.quote(str(config_path))
     log_path_value = shlex.quote(str(log_path))

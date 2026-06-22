@@ -15,7 +15,7 @@ class QueueTests(unittest.TestCase):
                 event_key="same-key",
                 agent_name="codex",
                 event_type=EventType.TASK_FINISHED,
-                project_name="agent-chime",
+                project_name="voiccce",
                 session_id="s1",
             )
 

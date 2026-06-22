@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Agent Chime.
+Thanks for helping improve Voiccce.
 
 ## Local Setup
 
@@ -15,7 +15,7 @@ python3 -m unittest discover -s tests
 
 - Keep the default path local-first and privacy-conscious.
 - Do not add network calls to the hook collector. Delivery adapters may use the network only when explicitly configured.
-- Do not commit API keys, generated databases, local logs, or files from `~/.agent-chime`.
+- Do not commit API keys, generated databases, local logs, or files from `~/.voiccce`.
 - Add focused tests for behavior changes in collectors, queueing, session state, daemon processing, installer behavior, and delivery fallbacks.
 
 ## Pull Requests

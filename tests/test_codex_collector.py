@@ -19,7 +19,7 @@ class CodexCollectorTests(unittest.TestCase):
             payload = {
                 "session_id": "session-1",
                 "turn_id": "turn-1",
-                "cwd": "/tmp/agent-chime",
+                "cwd": "/tmp/voiccce",
                 "hook_event_name": "Stop",
                 "transcript_path": str(transcript),
                 "last_assistant_message": "clipped preview...",
@@ -33,7 +33,7 @@ class CodexCollectorTests(unittest.TestCase):
         payload = {
             "session_id": "session-1",
             "turn_id": "turn-1",
-            "cwd": "/tmp/agent-chime",
+            "cwd": "/tmp/voiccce",
             "hook_event_name": "Stop",
             "transcript_path": "/nonexistent/transcript.jsonl",
             "last_assistant_message": "codex payload message",
@@ -78,7 +78,7 @@ class CodexCollectorTests(unittest.TestCase):
         payload = {
             "session_id": "session-1",
             "turn_id": "turn-1",
-            "cwd": "/tmp/agent-chime",
+            "cwd": "/tmp/voiccce",
             "hook_event_name": "Stop",
             "last_assistant_message": (
                 "Done.\n\n"
