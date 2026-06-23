@@ -37,8 +37,10 @@ curl -fsSL https://raw.githubusercontent.com/blackbalancef/voiccce/main/install.
 Then run the setup wizard:
 
 ```bash
-voiccce setup both
+voiccce setup
 ```
+
+You'll get an interactive checkbox picker — use `↑`/`↓` to move, `space` to toggle Claude Code, Codex, and/or `pi`, and `enter` to install. Claude Code + Codex are pre-selected.
 
 <details>
 <summary>Prefer manual steps? (you already have pipx)</summary>
@@ -47,7 +49,7 @@ voiccce setup both
 git clone https://github.com/blackbalancef/voiccce.git
 cd voiccce
 pipx install --force .
-voiccce setup both
+voiccce setup
 ```
 
 </details>
@@ -55,10 +57,10 @@ voiccce setup both
 No OpenAI API key? Use the built-in macOS voice:
 
 ```bash
-voiccce setup both --local
+voiccce setup --local
 ```
 
-Omit `both` to choose interactively, or pass one target explicitly: `claude-code`, `codex`, or `pi`.
+To skip the picker, pass targets explicitly: `voiccce setup claude-code`, `codex`, `pi`, or `both` (claude-code + codex).
 
 <details>
 <summary>What does setup configure?</summary>
@@ -114,7 +116,7 @@ voiccce menubar-stop
 
 | Capability | Claude Code | Codex | pi |
 | --- | :---: | :---: | :---: |
-| Installed by `voiccce setup both` | Yes | Yes | - |
+| Installed by `voiccce setup` (default) | Yes | Yes | - |
 | Installed by explicit target | Yes | Yes | Yes |
 | Task completed | Yes | Yes | Yes |
 | Permission request | Yes | Yes | - |

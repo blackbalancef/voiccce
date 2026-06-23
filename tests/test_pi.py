@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -80,6 +81,46 @@ class PiInstallerTests(unittest.TestCase):
 
             self.assertFalse(legacy_extension.exists())
             self.assertTrue((pi_home / "agent" / "extensions" / "voiccce.ts").exists())
+
+    def test_install_respects_pi_coding_agent_dir(self) -> None:
+        # pi-personal sets PI_CODING_AGENT_DIR=$HOME/.pi-personal/agent; the
+        # extension must land there, not under ~/.pi.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            custom_agent_dir = root / "pi-personal" / "agent"
+            env = {**os.environ, "PI_CODING_AGENT_DIR": str(custom_agent_dir)}
+            env.pop("PI_HOME", None)
+            with patch.dict(os.environ, env, clear=True):
+                result = install_pi_personal(
+                    repo_root=Path.cwd(),
+                    config_path=root / "config.toml",
+                    wrapper_path=root / "bin" / "voiccce-pi-hook",
+                    python_executable=sys.executable,
+                    verify=True,
+                )
+            self.assertEqual(
+                result.extension_path,
+                (custom_agent_dir / "extensions" / "voiccce.ts").resolve(),
+            )
+            self.assertTrue(result.extension_path.exists())
+
+    def test_explicit_pi_home_overrides_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env = {**os.environ, "PI_CODING_AGENT_DIR": str(root / "ignored")}
+            with patch.dict(os.environ, env, clear=False):
+                result = install_pi_personal(
+                    repo_root=Path.cwd(),
+                    pi_home=root / "explicit-pi-home",
+                    config_path=root / "config.toml",
+                    wrapper_path=root / "bin" / "voiccce-pi-hook",
+                    python_executable=sys.executable,
+                    verify=True,
+                )
+            self.assertEqual(
+                result.extension_path,
+                (root / "explicit-pi-home" / "agent" / "extensions" / "voiccce.ts").resolve(),
+            )
 
 
 class PiCollectCliTests(unittest.TestCase):

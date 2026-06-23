@@ -41,6 +41,7 @@ from .runtime import (
     voice_session_active,
 )
 from .secrets import delete_openai_keychain_secret, get_openai_secret_status, set_openai_keychain_secret
+from .ui import Choice, checkbox_select, confirm
 from .service import (
     daemon_status,
     menubar_service_paths,
@@ -52,6 +53,16 @@ from .service import (
     stop_menubar,
 )
 from .usage import fetch_usage_stats, format_duration, format_usd
+
+
+# Integrations offered by `voiccce setup`. Order is preserved in the picker.
+SETUP_TARGETS: list[Choice] = [
+    Choice("claude-code", "Claude Code", "Anthropic's terminal coding agent"),
+    Choice("codex", "Codex", "OpenAI's coding agent"),
+    Choice("pi", "pi", "Earendil Works coding agent"),
+]
+_SETUP_TARGET_LABEL = {choice.value: choice.label for choice in SETUP_TARGETS}
+_SETUP_TARGET_ORDER = [choice.value for choice in SETUP_TARGETS]
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -78,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--settings-path", help="Direct path to Claude settings.json")
     install.add_argument("--codex-home", help="Codex home directory, e.g. ~/.codex-personal. Uses <dir>/hooks.json.")
     install.add_argument("--hooks-path", help="Direct path to Codex hooks.json")
-    install.add_argument("--pi-home", help="pi home directory (default ~/.pi). Installs a global extension.")
+    install.add_argument("--pi-home", help="pi home directory (default ~/.pi; honors PI_CODING_AGENT_DIR for profiles like pi-personal). Installs a global extension.")
     install.set_defaults(handler=cmd_install)
 
     setup = subparsers.add_parser(
@@ -89,7 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
         "target",
         nargs="?",
         choices=["claude-code", "codex", "pi", "both"],
-        help="Which agent(s) to wire hooks for (prompted if omitted)",
+        help="Which agent(s) to wire hooks for. Omit for an interactive "
+        "checkbox picker. 'both' is a legacy alias for claude-code + codex.",
     )
     setup.add_argument("--voice", default=None, help="Voice name (default: marin for OpenAI TTS, Alex for --local)")
     setup.add_argument("--local", action="store_true", help="Use the local macOS say voice instead of OpenAI TTS (no API key)")
@@ -115,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--settings-path", help="Direct path to Claude settings.json")
     setup.add_argument("--codex-home", help="Codex home directory, e.g. ~/.codex-personal. Uses <dir>/hooks.json.")
     setup.add_argument("--hooks-path", help="Direct path to Codex hooks.json")
-    setup.add_argument("--pi-home", help="pi home directory (default ~/.pi). Installs a global extension.")
+    setup.add_argument("--pi-home", help="pi home directory (default ~/.pi; honors PI_CODING_AGENT_DIR for profiles like pi-personal). Installs a global extension.")
     setup.set_defaults(handler=cmd_setup)
 
     start = subparsers.add_parser("start", help="Start daemon in the background")
@@ -298,6 +310,14 @@ def cmd_setup(args: argparse.Namespace) -> None:
     config_path = write_default_config(args.config)
     config = load_config(config_path)
 
+    targets = _resolve_setup_targets(args.target)
+    if not targets:
+        return
+    labels = ", ".join(
+        _SETUP_TARGET_LABEL[t] for t in _SETUP_TARGET_ORDER if t in targets
+    )
+    print(f"→ Wiring hooks for: {labels}")
+
     if args.local:
         voice = args.voice or "Alex"
         set_voice_config(config_path, backend="macos_say", voice=voice)
@@ -308,9 +328,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
         set_voice_config(config_path, backend="openai_tts", voice=voice)
         print(f"✓ Voice backend: openai_tts (voice: {voice})")
 
-    target = _resolve_setup_target(args.target)
     installed: list[str] = []
-    if target in {"claude-code", "both"}:
+    if "claude-code" in targets:
         result = _setup_install(
             "Claude settings.json",
             install_claude_code_personal,
@@ -320,7 +339,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
         )
         print(f"✓ Claude Code hooks → {result.settings_path}")
         installed.append("claude-code")
-    if target in {"codex", "both"}:
+    if "codex" in targets:
         result = _setup_install(
             "Codex hooks.json",
             install_codex_personal,
@@ -330,7 +349,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
         )
         print(f"✓ Codex hooks → {result.hooks_path}")
         installed.append("codex")
-    if target == "pi":
+    if "pi" in targets:
         result = _setup_install(
             "pi extension",
             install_pi_personal,
@@ -362,7 +381,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
     if "codex" in installed:
         print("Codex: open /hooks and trust the Voiccce hooks; restart codex app-server if it was running.")
     if "pi" in installed:
-        print("pi: restart pi (or run /reload) so it loads the new ~/.pi extension.")
+        print(f"pi: restart pi (or run /reload) so it loads the extension at {result.extension_path.parent}.")
 
 
 _InstallResult = TypeVar("_InstallResult")
@@ -400,17 +419,32 @@ def _ensure_openai_key(config: AgentVoiceConfig, *, reset: bool) -> None:
     print("✓ OpenAI key saved to macOS Keychain")
 
 
-def _resolve_setup_target(target: str | None) -> str:
+def _resolve_setup_targets(target: str | None) -> set[str]:
+    """Resolve which integrations to wire. Runs the interactive picker when omitted."""
     if target:
-        return target
-    if sys.stdin.isatty():
-        answer = input("Wire hooks for? [claude-code/codex/pi/both] (both): ").strip().lower()
-        target = answer or "both"
-    else:
-        target = "both"
-    if target not in {"claude-code", "codex", "pi", "both"}:
-        raise SystemExit(f"Unknown target '{target}'. Choose claude-code, codex, pi, or both.")
-    return target
+        if target == "both":
+            return {"claude-code", "codex"}
+        return {target}
+
+    interactive = False
+    try:
+        interactive = bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:
+        interactive = False
+    if not interactive:
+        return {"claude-code", "codex"}
+
+    selected = checkbox_select(
+        SETUP_TARGETS,
+        title="Voiccce setup",
+        subtitle="Choose what to wire hooks for",
+        default=["claude-code", "codex"],
+        min_selected=1,
+        confirm_label="install",
+    )
+    if not selected:
+        raise SystemExit(0)
+    return set(selected)
 
 
 def _cocoa_available() -> bool:
@@ -451,8 +485,7 @@ def _maybe_setup_menubar(config: AgentVoiceConfig, *, choice: bool | None) -> No
     if enable is None:
         if not sys.stdin.isatty():
             return
-        answer = input("Enable the macOS menu bar app? [Y/n]: ").strip().lower()
-        enable = answer in {"", "y", "yes"}
+        enable = confirm("Enable the macOS menu bar app?", default=True)
     if not enable:
         return
     if not _ensure_menubar_dependency():

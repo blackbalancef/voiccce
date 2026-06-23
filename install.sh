@@ -98,9 +98,10 @@ hash -r 2>/dev/null || true
 echo
 if command -v voiccce >/dev/null 2>&1; then
   ok "Installed. Run the setup wizard:"
-  printf '%s\n' "    ${BOLD}voiccce setup both${RESET}        ${DIM}# or: voiccce setup both --local  (offline macOS voice)${RESET}"
+  printf '%s\n' "    ${BOLD}voiccce setup${RESET}             ${DIM}# arrow-key checkbox picker${RESET}"
+  printf '%s\n' "    ${BOLD}voiccce setup --local${RESET}      ${DIM}# offline macOS voice (no API key)${RESET}"
 else
   ok "Installed, but ${BOLD}voiccce${RESET} is not on your PATH yet."
   printf '%s\n' "    Open a new terminal (or run ${BOLD}exec \$SHELL${RESET}), then:"
-  printf '%s\n' "    ${BOLD}voiccce setup both${RESET}"
+  printf '%s\n' "    ${BOLD}voiccce setup${RESET}"
 fi

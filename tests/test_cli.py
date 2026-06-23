@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from agent_voice.cli import _maybe_setup_menubar, _menubar_install_command, main
+from agent_voice.cli import _maybe_setup_menubar, _menubar_install_command, _resolve_setup_targets, main
 from agent_voice.config import load_config, set_voice_config, write_default_config
 from agent_voice.runtime import set_active_voice_sessions
 
@@ -317,7 +317,41 @@ class SetupCommandTests(unittest.TestCase):
             start.assert_not_called()
 
 
-class SetupMenubarTests(unittest.TestCase):
+class ResolveSetupTargetsTests(unittest.TestCase):
+    def test_explicit_both_maps_to_claude_and_codex(self):
+        self.assertEqual(_resolve_setup_targets("both"), {"claude-code", "codex"})
+
+    def test_explicit_single_target(self):
+        self.assertEqual(_resolve_setup_targets("pi"), {"pi"})
+        self.assertEqual(_resolve_setup_targets("claude-code"), {"claude-code"})
+
+    def test_omitted_non_tty_defaults_to_claude_and_codex(self):
+        with patch("agent_voice.cli.sys.stdin.isatty", return_value=False):
+            self.assertEqual(_resolve_setup_targets(None), {"claude-code", "codex"})
+
+    def test_omitted_tty_runs_picker(self):
+        with (
+            patch("agent_voice.cli.sys.stdin.isatty", return_value=True),
+            patch("agent_voice.cli.sys.stdout.isatty", return_value=True),
+            patch("agent_voice.cli.checkbox_select", return_value=["codex", "pi"]) as picker,
+        ):
+            result = _resolve_setup_targets(None)
+        self.assertEqual(result, {"codex", "pi"})
+        picker.assert_called_once()
+        # default selection preserves the legacy "both" pre-check
+        self.assertEqual(picker.call_args.kwargs["default"], ["claude-code", "codex"])
+
+    def test_omitted_tty_cancel_exits(self):
+        with (
+            patch("agent_voice.cli.sys.stdin.isatty", return_value=True),
+            patch("agent_voice.cli.sys.stdout.isatty", return_value=True),
+            patch("agent_voice.cli.checkbox_select", return_value=None),
+        ):
+            with self.assertRaises(SystemExit):
+                _resolve_setup_targets(None)
+
+
+
     def _config(self) -> SimpleNamespace:
         return SimpleNamespace(config_path=Path("/tmp/config.toml"))
 
@@ -385,7 +419,7 @@ class SetupMenubarTests(unittest.TestCase):
         with (
             patch("agent_voice.cli.sys.platform", "darwin"),
             patch("agent_voice.cli.sys.stdin.isatty", return_value=True),
-            patch("builtins.input", return_value=""),
+            patch("agent_voice.cli.confirm", return_value=True),
             patch("agent_voice.cli._cocoa_available", return_value=True),
             patch("agent_voice.cli.start_menubar", return_value=7) as start,
             redirect_stdout(StringIO()),
@@ -397,7 +431,7 @@ class SetupMenubarTests(unittest.TestCase):
         with (
             patch("agent_voice.cli.sys.platform", "darwin"),
             patch("agent_voice.cli.sys.stdin.isatty", return_value=True),
-            patch("builtins.input", return_value="n"),
+            patch("agent_voice.cli.confirm", return_value=False),
             patch("agent_voice.cli.start_menubar") as start,
             redirect_stdout(StringIO()),
         ):

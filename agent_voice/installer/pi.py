@@ -20,7 +20,9 @@ MARKER = "VOICCCE=1"
 LEGACY_MARKER = "AGENT_CHIME=1"
 LEGACY_EXTENSION_NAME = "agent-chime.ts"
 
-# pi auto-discovers global extensions from ~/.pi/agent/extensions/*.ts
+# pi auto-discovers global extensions from <agent dir>/extensions/*.ts, where the agent
+# dir is PI_CODING_AGENT_DIR (default ~/.pi/agent). Alternate profiles such as
+# `pi-personal` set PI_CODING_AGENT_DIR=$HOME/.pi-personal/agent, so we must honor it.
 PI_HOOKS = ("Stop", "UserPromptSubmit")
 
 
@@ -45,8 +47,8 @@ def install_pi_personal(
 ) -> PiInstallResult:
     repo_root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
     config_path = config_path.expanduser().resolve()
-    pi_home = (pi_home or _default_pi_home()).expanduser().resolve()
-    extension_path = (extension_path or pi_home / "agent" / "extensions" / "voiccce.ts").expanduser().resolve()
+    agent_dir = _resolve_agent_dir(pi_home).expanduser().resolve()
+    extension_path = (extension_path or agent_dir / "extensions" / "voiccce.ts").expanduser().resolve()
     wrapper_path = wrapper_path.expanduser().resolve()
     python_executable = Path(python_executable or sys.executable).expanduser().resolve()
 
@@ -61,7 +63,7 @@ def install_pi_personal(
     _write_wrapper(wrapper_path, repo_root, config_path, python_executable)
     if verify:
         verify_wrapper_imports(python_executable, repo_root)
-    _remove_legacy_extension(pi_home, extension_path)
+    _remove_legacy_extension(agent_dir, extension_path)
     _write_extension(extension_path, wrapper_path)
     return PiInstallResult(
         extension_path=extension_path,
@@ -74,6 +76,17 @@ def install_pi_personal(
 
 def _default_pi_home() -> Path:
     return Path(os.environ.get("PI_HOME") or DEFAULT_PI_HOME)
+
+
+def _resolve_agent_dir(pi_home: Path | None) -> Path:
+    # Mirror pi's own getAgentDir(): PI_CODING_AGENT_DIR points at the agent dir
+    # itself and takes priority; otherwise fall back to PI_HOME/"agent" or
+    # ~/.pi/"agent". An explicit --pi-home always wins over the environment so
+    # callers (and tests) can target a throwaway directory.
+    env_agent_dir = os.environ.get("PI_CODING_AGENT_DIR")
+    if env_agent_dir and pi_home is None:
+        return Path(env_agent_dir)
+    return (pi_home or _default_pi_home()) / "agent"
 
 
 def _write_wrapper(wrapper_path: Path, repo_root: Path, config_path: Path, python_executable: Path) -> None:
@@ -99,11 +112,12 @@ exit 0
 
 def _write_extension(extension_path: Path, wrapper_path: Path) -> None:
     extension_path.parent.mkdir(parents=True, exist_ok=True)
+    extensions_dir = str(extension_path.parent)
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
     wrapper_js = _js_string(str(wrapper_path))
     content = f"""// {MARKER} Voiccce — pi integration (generated {stamp})
 // Bridges pi lifecycle events to the voiccce notification daemon.
-// Auto-discovered from ~/.pi/agent/extensions/. Safe to delete to uninstall.
+// Auto-discovered from {extensions_dir}. Safe to delete to uninstall.
 import {{ spawn }} from "node:child_process";
 
 const WRAPPER = {wrapper_js};
@@ -175,8 +189,8 @@ export default function (pi) {{
     extension_path.chmod(0o600)
 
 
-def _remove_legacy_extension(pi_home: Path, extension_path: Path) -> None:
-    legacy_path = (pi_home / "agent" / "extensions" / LEGACY_EXTENSION_NAME).resolve()
+def _remove_legacy_extension(agent_dir: Path, extension_path: Path) -> None:
+    legacy_path = (agent_dir / "extensions" / LEGACY_EXTENSION_NAME).resolve()
     if legacy_path == extension_path or not legacy_path.exists():
         return
     try:
