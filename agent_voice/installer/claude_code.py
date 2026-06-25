@@ -42,6 +42,15 @@ class ClaudeInstallResult:
     installed_events: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ClaudeRemoveResult:
+    settings_path: Path
+    backup_path: Path | None
+    removed_events: tuple[str, ...]
+    wrapper_path: Path
+    wrapper_removed: bool
+
+
 def install_claude_code_personal(
     *,
     repo_root: Path | None = None,
@@ -98,6 +107,88 @@ def install_claude_code_personal(
         database_path=config.database_path,
         installed_events=tuple(CLAUDE_HOOKS.keys()),
     )
+
+
+def remove_claude_code_personal(
+    *,
+    settings_path: Path = PERSONAL_SETTINGS_PATH,
+    wrapper_path: Path = WRAPPER_PATH,
+) -> ClaudeRemoveResult:
+    """Strip Voiccce hook entries from the Claude settings, idempotently.
+
+    Marker-tagged entries are removed via :func:`_without_voiccce_entries`
+    while every other hook the user configured is preserved. The settings file
+    is backed up before it is rewritten, and the generated hook wrapper is
+    deleted. When nothing is installed this is a safe no-op: no backup is taken,
+    ``removed_events`` is empty, and the file is left untouched.
+    """
+    settings_path = settings_path.expanduser().resolve()
+    wrapper_path = wrapper_path.expanduser().resolve()
+
+    settings = _read_settings(settings_path)
+    hooks = settings.get("hooks")
+
+    removed_events: list[str] = []
+    if isinstance(hooks, dict):
+        for hook_name, entries in list(hooks.items()):
+            if not isinstance(entries, list):
+                continue
+            kept = _without_voiccce_entries(entries)
+            if len(kept) == len(entries):
+                continue
+            removed_events.append(hook_name)
+            if kept:
+                hooks[hook_name] = kept
+            else:
+                del hooks[hook_name]
+
+    backup_path: Path | None = None
+    if removed_events:
+        backup_path = _backup_settings(settings_path)
+        _write_settings(settings_path, settings)
+
+    wrapper_removed = _remove_wrapper(wrapper_path)
+    return ClaudeRemoveResult(
+        settings_path=settings_path,
+        backup_path=backup_path,
+        removed_events=tuple(removed_events),
+        wrapper_path=wrapper_path,
+        wrapper_removed=wrapper_removed,
+    )
+
+
+def restore_latest_backup(settings_path: Path = PERSONAL_SETTINGS_PATH) -> Path | None:
+    """Restore the most recent Voiccce backup over ``settings_path``.
+
+    Returns the backup that was restored, or ``None`` when no backup exists.
+    """
+    settings_path = settings_path.expanduser().resolve()
+    backup_path = _latest_backup(settings_path)
+    if backup_path is None:
+        return None
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
+    settings_path.chmod(backup_path.stat().st_mode & 0o777)
+    return backup_path
+
+
+def _latest_backup(settings_path: Path) -> Path | None:
+    prefix = f"{settings_path.name}.voiccce-backup."
+    candidates = sorted(
+        (p for p in settings_path.parent.glob(f"{settings_path.name}.voiccce-backup.*") if p.name.startswith(prefix)),
+        key=lambda p: p.name,
+    )
+    return candidates[-1] if candidates else None
+
+
+def _remove_wrapper(wrapper_path: Path) -> bool:
+    if not wrapper_path.exists():
+        return False
+    try:
+        wrapper_path.unlink()
+    except OSError:
+        return False
+    return True
 
 
 def _read_settings(settings_path: Path) -> dict[str, object]:

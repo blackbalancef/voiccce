@@ -64,6 +64,28 @@ def parse_duration_seconds(value: str) -> int:
     raise ValueError(f"Unsupported duration unit '{unit}'. Use s, m, or h")
 
 
+def parse_age_seconds(value: str | int) -> int:
+    raw = str(value).strip().lower()
+    if not raw:
+        raise ValueError("Age is empty")
+    unit = raw[-1]
+    number = raw[:-1] if unit.isalpha() else raw
+    if not number.isdigit():
+        raise ValueError(f"Invalid age '{value}'")
+    amount = int(number)
+    if amount <= 0:
+        raise ValueError("Age must be positive")
+    if unit == "s" or not unit.isalpha():
+        return amount
+    if unit == "m":
+        return amount * 60
+    if unit == "h":
+        return amount * 60 * 60
+    if unit == "d":
+        return amount * 60 * 60 * 24
+    raise ValueError(f"Unsupported age unit '{unit}'. Use s, m, h, or d")
+
+
 def set_voice_mute(config: AgentVoiceConfig, duration_seconds: int, *, now: int | None = None) -> int:
     current_time = now or int(time.time())
     muted_until = current_time + duration_seconds

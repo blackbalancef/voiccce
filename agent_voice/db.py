@@ -282,3 +282,59 @@ def mark_events_processed(conn: sqlite3.Connection, event_keys: Iterable[str], p
         """,
         [(processed_at, key) for key in keys],
     )
+
+
+def count_prunable_events(
+    conn: sqlite3.Connection, *, older_than_epoch: int, status: str = "processed"
+) -> int:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) FROM events
+        WHERE status = ? AND created_at < ?
+        """,
+        (status, older_than_epoch),
+    ).fetchone()
+    return int(row[0])
+
+
+def prune_processed_events(conn: sqlite3.Connection, *, older_than_epoch: int) -> int:
+    cursor = conn.execute(
+        """
+        DELETE FROM events
+        WHERE status = 'processed' AND created_at < ?
+        """,
+        (older_than_epoch,),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
+def clear_events(conn: sqlite3.Connection) -> int:
+    cursor = conn.execute("DELETE FROM events")
+    conn.commit()
+    return cursor.rowcount
+
+
+def clear_notifications(conn: sqlite3.Connection) -> int:
+    cursor = conn.execute("DELETE FROM notifications")
+    conn.commit()
+    return cursor.rowcount
+
+
+def clear_session_states(conn: sqlite3.Connection) -> int:
+    cursor = conn.execute("DELETE FROM session_states")
+    conn.commit()
+    return cursor.rowcount
+
+
+def vacuum_db(conn: sqlite3.Connection) -> None:
+    conn.commit()
+    conn.execute("VACUUM")
+
+
+def db_size_bytes(database_path: str | Path) -> int:
+    path = Path(database_path).expanduser()
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0

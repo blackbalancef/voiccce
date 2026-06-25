@@ -35,6 +35,14 @@ class PiInstallResult:
     installed_events: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PiRemoveResult:
+    extension_path: Path
+    extension_removed: bool
+    wrapper_path: Path
+    wrapper_removed: bool
+
+
 def install_pi_personal(
     *,
     repo_root: Path | None = None,
@@ -72,6 +80,56 @@ def install_pi_personal(
         database_path=config.database_path,
         installed_events=PI_HOOKS,
     )
+
+
+def remove_pi_personal(
+    *,
+    pi_home: Path | None = None,
+    extension_path: Path | None = None,
+    wrapper_path: Path = WRAPPER_PATH,
+) -> PiRemoveResult:
+    """Unlink the generated ``voiccce.ts`` extension and the pi hook wrapper.
+
+    Mirrors :func:`_remove_legacy_extension` (which only handles the legacy
+    ``agent-chime.ts`` file): the current extension is removed only when it
+    carries the Voiccce marker, so a hand-written file at that path is left
+    untouched. Safe to call repeatedly and when nothing is installed.
+    """
+    agent_dir = _resolve_agent_dir(pi_home).expanduser().resolve()
+    extension_path = (extension_path or agent_dir / "extensions" / "voiccce.ts").expanduser().resolve()
+    wrapper_path = wrapper_path.expanduser().resolve()
+
+    extension_removed = _remove_extension(extension_path)
+    wrapper_removed = _remove_wrapper(wrapper_path)
+    return PiRemoveResult(
+        extension_path=extension_path,
+        extension_removed=extension_removed,
+        wrapper_path=wrapper_path,
+        wrapper_removed=wrapper_removed,
+    )
+
+
+def _remove_extension(extension_path: Path) -> bool:
+    if not extension_path.exists():
+        return False
+    try:
+        content = extension_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if MARKER not in content:
+        return False
+    extension_path.unlink(missing_ok=True)
+    return True
+
+
+def _remove_wrapper(wrapper_path: Path) -> bool:
+    if not wrapper_path.exists():
+        return False
+    try:
+        wrapper_path.unlink()
+    except OSError:
+        return False
+    return True
 
 
 def _default_pi_home() -> Path:

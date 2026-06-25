@@ -11,6 +11,26 @@ class WrapperImportError(RuntimeError):
     """Raised when a generated hook wrapper cannot import ``agent_voice``."""
 
 
+def remove_orphaned_wrappers(voiccce_home: Path) -> list[Path]:
+    """Delete leftover ``voiccce-*-hook`` wrapper scripts under ``voiccce_home``.
+
+    Returns the wrappers that were removed, sorted by name. Missing directories
+    and unreadable entries are tolerated so this is a safe no-op when nothing is
+    installed.
+    """
+    bin_dir = Path(voiccce_home).expanduser() / "bin"
+    if not bin_dir.is_dir():
+        return []
+    removed: list[Path] = []
+    for wrapper in sorted(bin_dir.glob("voiccce-*-hook")):
+        try:
+            wrapper.unlink()
+        except OSError:
+            continue
+        removed.append(wrapper)
+    return removed
+
+
 def verify_wrapper_imports(python_executable: Path, repo_root: Path) -> None:
     """Confirm the wrapper's interpreter can import ``agent_voice``.
 

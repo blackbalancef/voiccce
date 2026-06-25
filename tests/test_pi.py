@@ -12,7 +12,8 @@ from agent_voice.cli import main
 from agent_voice.config import load_config, write_default_config
 from agent_voice.db import connect, init_db
 from agent_voice.hooks.pi_event_collector import normalize_pi_event
-from agent_voice.installer.pi import MARKER, install_pi_personal
+from agent_voice.installer import remove_orphaned_wrappers
+from agent_voice.installer.pi import MARKER, install_pi_personal, remove_pi_personal
 from agent_voice.models import EventType
 
 
@@ -121,6 +122,82 @@ class PiInstallerTests(unittest.TestCase):
                 result.extension_path,
                 (root / "explicit-pi-home" / "agent" / "extensions" / "voiccce.ts").resolve(),
             )
+
+
+class PiRemoveTests(unittest.TestCase):
+    def test_remove_unlinks_extension_and_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pi_home = root / "pi-home"
+            wrapper_path = root / "bin" / "voiccce-pi-hook"
+            install = install_pi_personal(
+                repo_root=Path.cwd(),
+                pi_home=pi_home,
+                config_path=root / "config.toml",
+                wrapper_path=wrapper_path,
+                python_executable=sys.executable,
+                verify=True,
+            )
+            self.assertTrue(install.extension_path.exists())
+            self.assertTrue(install.wrapper_path.exists())
+
+            result = remove_pi_personal(pi_home=pi_home, wrapper_path=wrapper_path)
+
+            self.assertTrue(result.extension_removed)
+            self.assertFalse(result.extension_path.exists())
+            self.assertTrue(result.wrapper_removed)
+            self.assertFalse(result.wrapper_path.exists())
+
+    def test_remove_when_absent_is_safe_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = remove_pi_personal(
+                pi_home=root / "pi-home",
+                wrapper_path=root / "bin" / "voiccce-pi-hook",
+            )
+            self.assertFalse(result.extension_removed)
+            self.assertFalse(result.wrapper_removed)
+
+    def test_remove_keeps_unrelated_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pi_home = root / "pi-home"
+            extensions_dir = pi_home / "agent" / "extensions"
+            extensions_dir.mkdir(parents=True)
+            handwritten = extensions_dir / "voiccce.ts"
+            handwritten.write_text("// not a generated voiccce extension\n", encoding="utf-8")
+
+            result = remove_pi_personal(
+                pi_home=pi_home,
+                wrapper_path=root / "bin" / "voiccce-pi-hook",
+            )
+
+            self.assertFalse(result.extension_removed)
+            self.assertTrue(handwritten.exists())
+
+
+class OrphanedWrapperTests(unittest.TestCase):
+    def test_removes_voiccce_wrappers_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            voiccce_home = Path(tmp) / ".voiccce"
+            bin_dir = voiccce_home / "bin"
+            bin_dir.mkdir(parents=True)
+            claude = bin_dir / "voiccce-claude-hook"
+            codex = bin_dir / "voiccce-codex-hook"
+            unrelated = bin_dir / "some-other-tool"
+            for path in (claude, codex, unrelated):
+                path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            removed = remove_orphaned_wrappers(voiccce_home)
+
+            self.assertEqual(sorted(p.name for p in removed), ["voiccce-claude-hook", "voiccce-codex-hook"])
+            self.assertFalse(claude.exists())
+            self.assertFalse(codex.exists())
+            self.assertTrue(unrelated.exists())
+
+    def test_missing_dir_is_safe_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(remove_orphaned_wrappers(Path(tmp) / ".voiccce"), [])
 
 
 class PiCollectCliTests(unittest.TestCase):

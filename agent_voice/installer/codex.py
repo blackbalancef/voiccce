@@ -38,6 +38,15 @@ class CodexInstallResult:
     installed_events: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CodexRemoveResult:
+    hooks_path: Path
+    backup_path: Path | None
+    removed_events: tuple[str, ...]
+    wrapper_path: Path
+    wrapper_removed: bool
+
+
 def install_codex_personal(
     *,
     repo_root: Path | None = None,
@@ -101,6 +110,95 @@ def install_codex_personal(
         database_path=config.database_path,
         installed_events=tuple(CODEX_HOOKS.keys()),
     )
+
+
+def remove_codex_personal(
+    *,
+    codex_home: Path | None = None,
+    hooks_path: Path | None = None,
+    wrapper_path: Path = WRAPPER_PATH,
+) -> CodexRemoveResult:
+    """Strip Voiccce hook entries from the Codex hooks file, idempotently.
+
+    Marker-tagged entries are removed via :func:`_without_voiccce_entries`
+    while every other hook the user configured is preserved. The hooks file is
+    backed up before it is rewritten, and the generated hook wrapper is deleted.
+    When nothing is installed this is a safe no-op: no backup is taken,
+    ``removed_events`` is empty, and the file is left untouched.
+    """
+    codex_home = (codex_home or _default_codex_home()).expanduser().resolve()
+    hooks_path = (hooks_path or codex_home / "hooks.json").expanduser().resolve()
+    wrapper_path = wrapper_path.expanduser().resolve()
+
+    hooks_config = _read_hooks(hooks_path)
+    hooks = hooks_config.get("hooks")
+
+    removed_events: list[str] = []
+    if isinstance(hooks, dict):
+        for hook_name, entries in list(hooks.items()):
+            if not isinstance(entries, list):
+                continue
+            kept = _without_voiccce_entries(entries)
+            if len(kept) == len(entries):
+                continue
+            removed_events.append(hook_name)
+            if kept:
+                hooks[hook_name] = kept
+            else:
+                del hooks[hook_name]
+
+    backup_path: Path | None = None
+    if removed_events:
+        backup_path = _backup_hooks(hooks_path)
+        _write_hooks(hooks_path, hooks_config)
+
+    wrapper_removed = _remove_wrapper(wrapper_path)
+    return CodexRemoveResult(
+        hooks_path=hooks_path,
+        backup_path=backup_path,
+        removed_events=tuple(removed_events),
+        wrapper_path=wrapper_path,
+        wrapper_removed=wrapper_removed,
+    )
+
+
+def restore_latest_backup(
+    *,
+    codex_home: Path | None = None,
+    hooks_path: Path | None = None,
+) -> Path | None:
+    """Restore the most recent Voiccce backup over the Codex hooks file.
+
+    Returns the backup that was restored, or ``None`` when no backup exists.
+    """
+    codex_home = (codex_home or _default_codex_home()).expanduser().resolve()
+    hooks_path = (hooks_path or codex_home / "hooks.json").expanduser().resolve()
+    backup_path = _latest_backup(hooks_path)
+    if backup_path is None:
+        return None
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    hooks_path.write_text(backup_path.read_text(encoding="utf-8"), encoding="utf-8")
+    hooks_path.chmod(backup_path.stat().st_mode & 0o777)
+    return backup_path
+
+
+def _latest_backup(hooks_path: Path) -> Path | None:
+    prefix = f"{hooks_path.name}.voiccce-backup."
+    candidates = sorted(
+        (p for p in hooks_path.parent.glob(f"{hooks_path.name}.voiccce-backup.*") if p.name.startswith(prefix)),
+        key=lambda p: p.name,
+    )
+    return candidates[-1] if candidates else None
+
+
+def _remove_wrapper(wrapper_path: Path) -> bool:
+    if not wrapper_path.exists():
+        return False
+    try:
+        wrapper_path.unlink()
+    except OSError:
+        return False
+    return True
 
 
 def _default_codex_home() -> Path:

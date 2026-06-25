@@ -9,6 +9,7 @@ from agent_voice.runtime import (
     clear_active_voice_sessions,
     clear_voice_mute,
     clear_voice_activity,
+    parse_age_seconds,
     parse_duration_seconds,
     read_voice_activity_started_at,
     set_active_voice_sessions,
@@ -46,6 +47,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(parse_duration_seconds("10m"), 600)
         self.assertEqual(parse_duration_seconds("1h"), 3600)
         self.assertEqual(parse_duration_seconds("2"), 120)
+
+    def test_parse_age_seconds(self) -> None:
+        self.assertEqual(parse_age_seconds("45s"), 45)
+        self.assertEqual(parse_age_seconds("30m"), 1800)
+        self.assertEqual(parse_age_seconds("12h"), 43200)
+        self.assertEqual(parse_age_seconds("30d"), 2592000)
+        # bare integer == seconds (differs from parse_duration_seconds minutes)
+        self.assertEqual(parse_age_seconds("90"), 90)
+        self.assertEqual(parse_age_seconds(90), 90)
+
+    def test_parse_age_seconds_rejects_bad_input(self) -> None:
+        for bad in ("", "  ", "abc", "1.5d", "-5d", "0d", "10x", "d"):
+            with self.assertRaises(ValueError):
+                parse_age_seconds(bad)
 
     def test_voice_mute_status_expires(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
