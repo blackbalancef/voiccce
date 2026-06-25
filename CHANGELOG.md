@@ -3,17 +3,12 @@
 ## 0.1.0 - Unreleased
 
 ### Added
+- Lifecycle management commands: `voiccce doctor` runs health checks (config, database, hooks wired per agent, hook-wrapper import, OpenAI key validity, audio tools, daemon heartbeat, mute state, failed events) and exits non-zero on any failure; supports `--no-validate-key` and `--json`. `voiccce logs` tails a log file (`--daemon`/`--menubar`/`--hook`/`--summary`, `-n`, `-f`). `voiccce prune [--older-than 30d]` deletes old processed events and VACUUMs the database. `voiccce clear [--events] [--history] [--all] [--yes]` clears the queue and/or notification history. `voiccce --version` / `-V` prints the installed version.
+- `voiccce autostart {enable,disable,status}` — opt-in macOS `launchd` autostart for the daemon (and menu bar app), off by default, so Voiccce can come back after a reboot or login.
+- `voiccce uninstall [target] [--purge] [--restore-backups] [--yes]`. With a target it unwires one integration's hooks; with no target it tears down everything: stops the daemon and menu bar, strips the `VOICCCE=1` hook blocks from every wired agent, deletes the OpenAI key from the Keychain, disables autostart, and prints the package-removal follow-up (`pipx`/`pip`). Keeps `~/.voiccce` unless `--purge`.
+- New `voiccce config` flags: `--summary {on,off}`, `--summary-privacy {metadata_only,full_last_message}`, `--summary-model`, `--summary-provider`, `--summary-pipeline-log {on,off}`, `--event NAME=on|off` (five event types), `--max-events-per-minute`, `--daily-spend-cap`, `--monthly-spend-cap`, `--event-retention-days`, `--interrupt-on-reply {on,off}`, and `--reset [--reset-section NAME]`.
 - Global stop-speaking hotkey. While the menu bar app runs, a system-wide keyboard shortcut (default `⌥⌘S`) instantly silences the current announcement from any app — handy on a meeting or when you've already read the message. It uses Carbon's `RegisterEventHotKey`, so no Accessibility/Input-Monitoring permission is needed and only the chosen combo is captured. Configure it three ways: the new `Stop hotkey` submenu in the menu bar, a picker during `voiccce setup` (or `--hotkey`), or `voiccce config --hotkey "ctrl+alt+cmd+."` (`--hotkey off` disables it). Lives under `[hotkey]` in `config.toml`.
 - Free-form notification language setting for AI summaries. `voiccce setup` now asks for a language name, `voiccce setup --language Spanish` and `voiccce config --language Spanish` persist it, and the menu bar exposes a `Notification language` entry.
-
-### Changed
-- `voiccce setup` is now a guided interactive wizard. It gathers every choice up front before doing any work: (1) a checkbox picker for which agents to wire (Claude Code, Codex, pi), (2) a text prompt for the AI-summary language, (3) a new voice picker to choose OpenAI TTS or the offline macOS voice, and (4) a yes/no prompt for the menu bar app. `↑`/`↓` navigate, `space` toggles, `a` selects all, `enter` confirms, `esc` cancels. Each menu is skipped when the matching flag is passed: a target (`claude-code`/`codex`/`pi`/`both`), `--language`, `--openai`/`--local`, or `--menubar`/`--no-menubar`. The new `--openai` flag forces OpenAI TTS without showing the voice picker.
-
-### Fixed
-- pi integration now honors `PI_CODING_AGENT_DIR`, so alternate profiles such as `pi-personal` (which runs `PI_CODING_AGENT_DIR=$HOME/.pi-personal/agent pi`) get the extension installed into their own extensions directory instead of always `~/.pi/agent/extensions/`. Without this, voiccce stayed silent for pi-personal because pi never discovered the extension.
-
-
-
 - Local SQLite event queue and daemon.
 - Claude Code hook collector and personal settings installer.
 - Session-aware notification state with deduplication, grouping, and stale/conflicting event suppression.
@@ -22,4 +17,20 @@
 - Local secret loading from environment variables, `~/.voiccce/.env`, or macOS Keychain.
 - Optional macOS menu bar companion with stop-speaking, mute, daemon controls, and quick access to config/logs.
 - Runtime voice controls: `stop-speaking`, `mute`, and `unmute`.
+
+### Changed
+- `voiccce update` is now a first-class command: it reports the version before and after, re-applies hooks for every wired agent, and runs a post-update health probe. With a local checkout it reinstalls from that source; with none (e.g. a non-editable pipx install) it self-fetches from `git+https://github.com/blackbalancef/voiccce@main`. New flags: `--source`, `--ref`, `--dev` (editable install), `--no-hooks`, `--no-probe`, `--no-restart`. This replaces the manual "git pull + pipx install --force" update story.
+- `voiccce config` now writes `config.toml` atomically and migrates older config files in place, so concurrent reads never see a half-written file.
+- `voiccce setup` is now a guided interactive wizard. It gathers every choice up front before doing any work: (1) a checkbox picker for which agents to wire (Claude Code, Codex, pi), (2) a text prompt for the AI-summary language, (3) a new voice picker to choose OpenAI TTS or the offline macOS voice, and (4) a yes/no prompt for the menu bar app. `↑`/`↓` navigate, `space` toggles, `a` selects all, `enter` confirms, `esc` cancels. Each menu is skipped when the matching flag is passed: a target (`claude-code`/`codex`/`pi`/`both`), `--language`, `--openai`/`--local`, or `--menubar`/`--no-menubar`. The new `--openai` flag forces OpenAI TTS without showing the voice picker.
+
+### Privacy
+- Disclosed the summary pipeline log. When AI summaries are enabled, `~/.voiccce/summary.log` (mode `0600`, rotated to `summary.log.1`) stores the pipeline in plaintext: the assistant's last message, the prompt, the model's output, and the final spoken text. It is on by default and can be disabled with `voiccce config --summary-pipeline-log off` (and cleared with `voiccce clear --history`). The default `summary_privacy_level` remains `full_last_message`, which sends the assistant's last message to OpenAI; `metadata_only` limits this to the short notification text. README and SECURITY.md were corrected accordingly.
+
+### Fixed
+- Quiet hours are now actually enforced. The `[quiet_hours]` window (enabled by default, 23:00–09:00) suppresses voice playback while still showing desktop notifications.
+- The `max_events_per_minute` rate limit (default 6) is now enforced.
+- Daily and monthly spend caps are now enforced: once a cap is reached, Voiccce falls back to the free macOS voice instead of billing OpenAI.
+- Event retention is now enforced: processed events older than `event_retention_days` (default 30) are auto-pruned and the database vacuumed.
+- Daemon resilience: the daemon now writes a heartbeat and recovers from transient errors, which `voiccce doctor` reports on.
 - `stop-speaking` now cancels pending OpenAI TTS playback and terminates voice playback process groups.
+- pi integration now honors `PI_CODING_AGENT_DIR`, so alternate profiles such as `pi-personal` (which runs `PI_CODING_AGENT_DIR=$HOME/.pi-personal/agent pi`) get the extension installed into their own extensions directory instead of always `~/.pi/agent/extensions/`. Without this, voiccce stayed silent for pi-personal because pi never discovered the extension.

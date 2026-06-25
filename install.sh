@@ -112,8 +112,13 @@ if command -v voiccce >/dev/null 2>&1; then
   ok "Installed. Run the interactive setup wizard:"
   printf '%s\n' "    ${BOLD}voiccce setup${RESET}             ${DIM}# pick agents, voice, and menu bar in arrow-key menus${RESET}"
   printf '%s\n' "    ${BOLD}voiccce setup --local${RESET}      ${DIM}# skip the voice picker, use the offline macOS voice${RESET}"
+  echo
+  printf '%s\n' "  ${DIM}Then, any time:${RESET}"
+  printf '%s\n' "    ${BOLD}voiccce doctor${RESET}            ${DIM}# health-check config, hooks, key, daemon, and audio${RESET}"
+  printf '%s\n' "    ${BOLD}voiccce update${RESET}            ${DIM}# update in place (self-fetches from GitHub if needed)${RESET}"
+  printf '%s\n' "    ${BOLD}voiccce uninstall${RESET}         ${DIM}# tear it all back down${RESET}"
 else
   ok "Installed, but ${BOLD}voiccce${RESET} is not on your PATH yet."
   printf '%s\n' "    Open a new terminal (or run ${BOLD}exec \$SHELL${RESET}), then:"
-  printf '%s\n' "    ${BOLD}voiccce setup${RESET}"
+  printf '%s\n' "    ${BOLD}voiccce setup${RESET}             ${DIM}# later: voiccce doctor / voiccce update / voiccce uninstall${RESET}"
 fi
