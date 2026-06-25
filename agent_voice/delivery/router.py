@@ -56,9 +56,18 @@ def test_message(config: AgentVoiceConfig) -> str:
 
 
 class DeliveryRouter:
-    def __init__(self, config: AgentVoiceConfig, *, terminal_only: bool = False) -> None:
+    def __init__(
+        self,
+        config: AgentVoiceConfig,
+        *,
+        terminal_only: bool = False,
+        force_backend: str | None = None,
+    ) -> None:
         self.config = config
         self.terminal_only = terminal_only
+        # When a spend cap is hit the daemon forces the free ``macos_say`` backend
+        # so no paid TTS request is made; ``None`` honors the configured backend.
+        self.force_backend = force_backend
 
     def deliver(self, message: str) -> list[DeliveryResult]:
         if self.terminal_only:
@@ -70,7 +79,8 @@ class DeliveryRouter:
             results.append(result)
             if result.delivered:
                 return results
-            if self.config.voice_backend == "openai_tts" and result.channel not in {"voice_muted", "voice_cancelled"}:
+            effective_backend = self.force_backend or self.config.voice_backend
+            if effective_backend == "openai_tts" and result.channel not in {"voice_muted", "voice_cancelled"}:
                 fallback = self._say(message)
                 results.append(fallback)
                 if fallback.delivered:
@@ -99,7 +109,8 @@ class DeliveryRouter:
         started_at = time.time()
         activity_started_at = start_voice_activity(self.config, now=started_at)
         try:
-            if self.config.voice_backend == "openai_tts":
+            backend = self.force_backend or self.config.voice_backend
+            if backend == "openai_tts":
                 return self._openai_tts(message, started_at=started_at)
             return self._say(message, started_at=started_at)
         finally:

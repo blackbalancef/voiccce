@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_voice.config import AgentVoiceConfig, load_config, set_voice_config
-from agent_voice.daemon import maybe_reload_config, process_once
+from agent_voice.daemon import in_quiet_hours, maybe_reload_config, process_once, run_maintenance
 from agent_voice.db import connect, init_db
 from agent_voice.delivery import DeliveryResult
 from agent_voice.intelligence.summarizer import SummaryResult
@@ -335,7 +335,12 @@ class DaemonTests(unittest.TestCase):
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path, min_seconds_between_voice_messages=8)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                min_seconds_between_voice_messages=8,
+                quiet_hours_enabled=False,  # isolate the min-seconds throttle from quiet hours
+            )
             seen_voice_enabled: list[bool] = []
 
             class FakeDeliveryRouter:
@@ -385,6 +390,7 @@ class DaemonTests(unittest.TestCase):
                 config_path=Path(tmp) / "config.toml",
                 database_path=db_path,
                 min_seconds_between_voice_messages=8,
+                quiet_hours_enabled=False,  # isolate the throttle from quiet hours
             )
             seen_voice_enabled: list[bool] = []
 
@@ -424,7 +430,12 @@ class DaemonTests(unittest.TestCase):
             db_path = f"{tmp}/events.sqlite3"
             conn = connect(db_path)
             init_db(conn)
-            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml", database_path=db_path, summary_enabled=True)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                summary_enabled=True,
+                quiet_hours_enabled=False,  # quiet hours would suppress the voice path (and its summary)
+            )
             enqueue_event(
                 conn,
                 NormalizedEvent.build(
@@ -476,6 +487,7 @@ class DaemonTests(unittest.TestCase):
                 config_path=Path(tmp) / "config.toml",
                 database_path=db_path,
                 summary_enabled=True,
+                quiet_hours_enabled=False,  # quiet hours would suppress the voice path (and its summary)
             )
             enqueue_event(
                 conn,
@@ -587,6 +599,458 @@ class ConfigHotReloadTests(unittest.TestCase):
 
             self.assertIs(result, config)
             self.assertEqual(result_mtime, 123.0)
+
+
+class QuietHoursTests(unittest.TestCase):
+    def _config(self, **kwargs) -> AgentVoiceConfig:
+        return AgentVoiceConfig(timezone="UTC", **kwargs)
+
+    def test_disabled_is_never_quiet(self) -> None:
+        config = self._config(quiet_hours_enabled=False, quiet_hours_from="23:00", quiet_hours_to="09:00")
+        # 02:00 UTC would be inside the window, but quiet hours are off.
+        self.assertFalse(in_quiet_hours(config, now=2 * 3600))
+
+    def test_window_wrapping_past_midnight(self) -> None:
+        config = self._config(quiet_hours_enabled=True, quiet_hours_from="23:00", quiet_hours_to="09:00")
+        self.assertTrue(in_quiet_hours(config, now=23 * 3600 + 30 * 60))  # 23:30 inside
+        self.assertTrue(in_quiet_hours(config, now=2 * 3600))             # 02:00 inside
+        self.assertTrue(in_quiet_hours(config, now=8 * 3600 + 59 * 60))   # 08:59 inside
+        self.assertFalse(in_quiet_hours(config, now=9 * 3600))            # 09:00 boundary excluded
+        self.assertFalse(in_quiet_hours(config, now=12 * 3600))           # noon outside
+
+    def test_same_day_window(self) -> None:
+        config = self._config(quiet_hours_enabled=True, quiet_hours_from="13:00", quiet_hours_to="14:00")
+        self.assertTrue(in_quiet_hours(config, now=13 * 3600 + 30 * 60))
+        self.assertFalse(in_quiet_hours(config, now=12 * 3600))
+        self.assertFalse(in_quiet_hours(config, now=14 * 3600))
+
+    def test_quiet_hours_suppress_voice_in_process_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            # quiet_hours_voice False => voice suppressed; quiet_hours_desktop True => desktop allowed
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                timezone="UTC",
+                quiet_hours_enabled=True,
+                quiet_hours_from="00:00",
+                quiet_hours_to="23:59",
+                quiet_hours_voice=False,
+            )
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="finished",
+                    agent_name="codex",
+                    event_type=EventType.TASK_FINISHED,
+                    project_name="api",
+                    session_id="s1",
+                ),
+            )
+
+            seen_voice_enabled: list[bool] = []
+
+            class FakeDeliveryRouter:
+                def __init__(self, config, *, terminal_only: bool = False) -> None:
+                    seen_voice_enabled.append(config.voice_enabled)
+
+                def deliver(self, message: str) -> list[DeliveryResult]:
+                    return [DeliveryResult(channel="macos_notification", delivered=True)]
+
+            with (
+                patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter),
+                patch("agent_voice.daemon.in_quiet_hours", return_value=True),
+            ):
+                process_once(conn, config, deliver=True, current_time=100)
+
+            self.assertEqual(seen_voice_enabled, [False])  # voice gated off during quiet hours
+            row = conn.execute("SELECT channel, spoken, error FROM notifications").fetchone()
+            self.assertEqual(row["channel"], "macos_notification")
+            self.assertEqual(row["spoken"], 0)
+            self.assertIn("quiet_hours", row["error"])
+            conn.close()
+
+
+class RateLimitTests(unittest.TestCase):
+    def _seed_voice_deliveries(self, conn, *, count: int, delivered_at: int) -> None:
+        for i in range(count):
+            conn.execute(
+                """
+                INSERT INTO notifications (
+                    event_ids_json, category, channel, message, notification_hash,
+                    spoken, audio_generated, created_at, delivered_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("[]", "completed", "openai_tts", "Done.", f"r{delivered_at}-{i}", 1, 1, delivered_at, delivered_at),
+            )
+        conn.commit()
+
+    def test_rate_limit_suppresses_voice_beyond_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                quiet_hours_enabled=False,
+                min_seconds_between_voice_messages=0,
+                max_events_per_minute=2,
+            )
+            # Two voice deliveries already in the trailing 60s => at cap.
+            self._seed_voice_deliveries(conn, count=2, delivered_at=80)
+
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="finished",
+                    agent_name="codex",
+                    event_type=EventType.TASK_FINISHED,
+                    project_name="api",
+                    session_id="s1",
+                ),
+            )
+
+            seen_voice_enabled: list[bool] = []
+            summarize_calls: list[int] = []
+
+            class FakeDeliveryRouter:
+                def __init__(self, config, *, terminal_only: bool = False) -> None:
+                    seen_voice_enabled.append(config.voice_enabled)
+
+                def deliver(self, message: str) -> list[DeliveryResult]:
+                    return [DeliveryResult(channel="macos_notification", delivered=True)]
+
+            def fake_summarize(config, candidate):
+                summarize_calls.append(1)
+                from agent_voice.intelligence.summarizer import SummaryResult
+
+                return SummaryResult(message="x", cost_usd=0.001)
+
+            with (
+                patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter),
+                patch("agent_voice.daemon.summarize_notification", fake_summarize),
+            ):
+                process_once(conn, config, deliver=True, current_time=100)
+
+            self.assertEqual(seen_voice_enabled, [False])  # voice suppressed at cap
+            self.assertEqual(summarize_calls, [])          # no paid summary when suppressed
+            row = conn.execute(
+                "SELECT channel, spoken, error FROM notifications ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(row["spoken"], 0)
+            self.assertIn("rate_limited", row["error"])
+            conn.close()
+
+    def test_under_cap_still_voices(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                quiet_hours_enabled=False,
+                min_seconds_between_voice_messages=0,
+                max_events_per_minute=5,
+            )
+            self._seed_voice_deliveries(conn, count=1, delivered_at=80)  # well under cap
+
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="finished",
+                    agent_name="codex",
+                    event_type=EventType.TASK_FINISHED,
+                    project_name="api",
+                    session_id="s1",
+                ),
+            )
+
+            seen_voice_enabled: list[bool] = []
+
+            class FakeDeliveryRouter:
+                def __init__(self, config, *, terminal_only: bool = False) -> None:
+                    seen_voice_enabled.append(config.voice_enabled)
+
+                def deliver(self, message: str) -> list[DeliveryResult]:
+                    return [DeliveryResult(channel="openai_tts", delivered=True, spoken=True, audio_generated=True)]
+
+            with patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter):
+                process_once(conn, config, deliver=True, current_time=100)
+
+            self.assertEqual(seen_voice_enabled, [True])
+            conn.close()
+
+
+class SpendCapTests(unittest.TestCase):
+    def _seed_today_spend(self, conn, *, audio_cost: float) -> None:
+        from agent_voice.usage import start_of_day_epoch
+
+        today = start_of_day_epoch("Europe/Belgrade")
+        conn.execute(
+            """
+            INSERT INTO notifications (
+                event_ids_json, category, channel, message, notification_hash,
+                spoken, audio_generated, audio_cost_usd, summary_cost_usd, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("[]", "completed", "openai_tts", "Done.", "spend1", 1, 1, audio_cost, 0.0, today + 60),
+        )
+        conn.commit()
+
+    def test_daily_cap_forces_free_backend_and_skips_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                timezone="Europe/Belgrade",
+                quiet_hours_enabled=False,
+                min_seconds_between_voice_messages=0,
+                voice_backend="openai_tts",
+                daily_spend_cap_usd=0.05,
+            )
+            self._seed_today_spend(conn, audio_cost=0.10)  # already over the $0.05 cap
+
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="finished",
+                    agent_name="codex",
+                    event_type=EventType.TASK_FINISHED,
+                    project_name="api",
+                    session_id="s1",
+                ),
+            )
+
+            seen_force_backend: list[object] = []
+            summarize_calls: list[int] = []
+
+            class FakeDeliveryRouter:
+                def __init__(self, config, *, terminal_only: bool = False, force_backend=None) -> None:
+                    seen_force_backend.append(force_backend)
+
+                def deliver(self, message: str) -> list[DeliveryResult]:
+                    return [DeliveryResult(channel="macos_say", delivered=True, spoken=True, audio_generated=True)]
+
+            def fake_summarize(config, candidate):
+                summarize_calls.append(1)
+                from agent_voice.intelligence.summarizer import SummaryResult
+
+                return SummaryResult(message="x", cost_usd=0.001)
+
+            with (
+                patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter),
+                patch("agent_voice.daemon.summarize_notification", fake_summarize),
+            ):
+                process_once(conn, config, deliver=True, current_time=100)
+
+            self.assertEqual(seen_force_backend, ["macos_say"])  # forced to the free backend
+            self.assertEqual(summarize_calls, [])                # paid summary skipped over the cap
+            conn.close()
+
+    def test_under_cap_keeps_paid_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                timezone="Europe/Belgrade",
+                quiet_hours_enabled=False,
+                min_seconds_between_voice_messages=0,
+                voice_backend="openai_tts",
+                daily_spend_cap_usd=1.0,
+            )
+            self._seed_today_spend(conn, audio_cost=0.10)  # under the $1.00 cap
+
+            enqueue_event(
+                conn,
+                NormalizedEvent.build(
+                    event_key="finished",
+                    agent_name="codex",
+                    event_type=EventType.TASK_FINISHED,
+                    project_name="api",
+                    session_id="s1",
+                ),
+            )
+
+            seen_force_backend: list[object] = []
+
+            class FakeDeliveryRouter:
+                def __init__(self, config, *, terminal_only: bool = False, force_backend=None) -> None:
+                    seen_force_backend.append(force_backend)
+
+                def deliver(self, message: str) -> list[DeliveryResult]:
+                    return [DeliveryResult(channel="openai_tts", delivered=True, spoken=True, audio_generated=True)]
+
+            with patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter):
+                process_once(conn, config, deliver=True, current_time=100)
+
+            # force_backend is None => not passed at all; fake default keeps None
+            self.assertEqual(seen_force_backend, [None])
+            conn.close()
+
+
+class MaintenanceTests(unittest.TestCase):
+    def test_retention_prunes_old_processed_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                event_retention_days=30,
+            )
+            now = 100 * 86400  # day 100
+            old = now - 40 * 86400  # 40 days ago -> prunable
+            recent = now - 5 * 86400  # 5 days ago -> kept
+            conn.execute(
+                "INSERT INTO events (event_key, agent_name, event_type, raw_payload_json, status, created_at) "
+                "VALUES (?, ?, ?, ?, 'processed', ?)",
+                ("old", "codex", "task_finished", "{}", old),
+            )
+            conn.execute(
+                "INSERT INTO events (event_key, agent_name, event_type, raw_payload_json, status, created_at) "
+                "VALUES (?, ?, ?, ?, 'processed', ?)",
+                ("recent", "codex", "task_finished", "{}", recent),
+            )
+            conn.commit()
+
+            pruned = run_maintenance(conn, config, current_time=now, now=1000.0)
+
+            self.assertEqual(pruned, 1)
+            keys = {row[0] for row in conn.execute("SELECT event_key FROM events").fetchall()}
+            self.assertEqual(keys, {"recent"})
+            conn.close()
+
+    def test_retention_disabled_keeps_everything(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                event_retention_days=0,  # keep forever
+            )
+            conn.execute(
+                "INSERT INTO events (event_key, agent_name, event_type, raw_payload_json, status, created_at) "
+                "VALUES (?, ?, ?, ?, 'processed', ?)",
+                ("ancient", "codex", "task_finished", "{}", 0),
+            )
+            conn.commit()
+
+            pruned = run_maintenance(conn, config, current_time=100 * 86400, now=1000.0)
+
+            self.assertEqual(pruned, 0)
+            count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            self.assertEqual(count, 1)
+            conn.close()
+
+    def test_vacuum_baselines_then_runs_after_interval(self) -> None:
+        from agent_voice import daemon as daemon_module
+        from agent_voice.runtime import read_runtime_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                event_retention_days=0,
+            )
+
+            vacuum_calls: list[int] = []
+            with patch.object(daemon_module, "vacuum_db", lambda c: vacuum_calls.append(1)):
+                # First cycle baselines without vacuuming.
+                run_maintenance(conn, config, current_time=0, now=1000.0)
+                self.assertEqual(vacuum_calls, [])
+                self.assertAlmostEqual(read_runtime_state(config)["last_vacuum_at"], 1000.0)
+
+                # Still within the 24h interval: no vacuum.
+                run_maintenance(conn, config, current_time=0, now=1000.0 + 3600)
+                self.assertEqual(vacuum_calls, [])
+
+                # Past the interval: vacuum runs and the timestamp advances.
+                later = 1000.0 + daemon_module.VACUUM_INTERVAL_SECONDS + 1
+                run_maintenance(conn, config, current_time=0, now=later)
+                self.assertEqual(vacuum_calls, [1])
+                self.assertAlmostEqual(read_runtime_state(config)["last_vacuum_at"], later)
+            conn.close()
+
+
+class HeartbeatTests(unittest.TestCase):
+    def test_write_read_and_age(self) -> None:
+        from agent_voice.heartbeat import (
+            heartbeat_age_seconds,
+            heartbeat_path,
+            read_heartbeat,
+            write_heartbeat,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml")
+
+            self.assertIsNone(read_heartbeat(config))
+            self.assertIsNone(heartbeat_age_seconds(config))
+
+            write_heartbeat(config, now=1000.0)
+            self.assertEqual(heartbeat_path(config).name, "daemon.heartbeat")
+
+            heartbeat = read_heartbeat(config)
+            self.assertIsNotNone(heartbeat)
+            self.assertEqual(heartbeat["ts"], 1000)
+            self.assertIn("pid", heartbeat)
+            self.assertIn("version", heartbeat)
+
+            self.assertAlmostEqual(heartbeat_age_seconds(config, now=1005.0), 5.0)
+            # Clock skew never yields a negative age.
+            self.assertEqual(heartbeat_age_seconds(config, now=900.0), 0.0)
+
+    def test_corrupt_heartbeat_reads_as_none(self) -> None:
+        from agent_voice.heartbeat import heartbeat_path, read_heartbeat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AgentVoiceConfig(config_path=Path(tmp) / "config.toml")
+            path = heartbeat_path(config)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{ not json", encoding="utf-8")
+            self.assertIsNone(read_heartbeat(config))
+
+
+class ResilienceTests(unittest.TestCase):
+    def test_run_daemon_continues_after_a_bad_cycle(self) -> None:
+        from agent_voice import daemon as daemon_module
+        from agent_voice.heartbeat import read_heartbeat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            conn.close()
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+            )
+
+            with patch.object(daemon_module, "process_once", side_effect=RuntimeError("boom")):
+                # once=True runs a single cycle; the exception must be swallowed.
+                daemon_module.run_daemon(config, once=True, deliver=False)
+
+            # Heartbeat is still written even though the cycle body raised.
+            heartbeat = read_heartbeat(config)
+            self.assertIsNotNone(heartbeat)
+            self.assertIn("pid", heartbeat)
+            self.assertIn("ts", heartbeat)
 
 
 if __name__ == "__main__":

@@ -10,15 +10,27 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .db import connect, init_db
 
 
+def _resolve_timezone(timezone: str):
+    try:
+        return ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return datetime.now().astimezone().tzinfo
+
+
 def start_of_day_epoch(timezone: str, *, now: float | None = None) -> int:
     """Epoch seconds of the most recent local midnight in ``timezone``."""
-    try:
-        tz = ZoneInfo(timezone)
-    except (ZoneInfoNotFoundError, ValueError, OSError):
-        tz = datetime.now().astimezone().tzinfo
+    tz = _resolve_timezone(timezone)
     current = datetime.fromtimestamp(time.time() if now is None else now, tz)
     midnight = current.replace(hour=0, minute=0, second=0, microsecond=0)
     return int(midnight.timestamp())
+
+
+def start_of_month_epoch(timezone: str, *, now: float | None = None) -> int:
+    """Epoch seconds of local midnight on the first day of the current month."""
+    tz = _resolve_timezone(timezone)
+    current = datetime.fromtimestamp(time.time() if now is None else now, tz)
+    first = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return int(first.timestamp())
 
 
 @dataclass(frozen=True, slots=True)

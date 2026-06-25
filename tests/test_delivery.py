@@ -113,6 +113,50 @@ class DeliveryTests(unittest.TestCase):
             self.assertTrue(result.delivered)
             self.assertIsNone(read_voice_activity_started_at(config, now=101.0))
 
+    def test_force_backend_overrides_configured_openai_tts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                voice_backend="openai_tts",
+                voice_name="marin",
+            )
+            router = DeliveryRouter(config, force_backend="macos_say")
+            called: list[str] = []
+
+            def fake_say(message: str, *, started_at: float | None = None) -> DeliveryResult:
+                called.append(message)
+                return DeliveryResult(channel="macos_say", delivered=True, spoken=True)
+
+            with (
+                patch.object(router, "_say", fake_say),
+                patch.object(router, "_openai_tts") as openai_tts,
+                patch("agent_voice.delivery.router.time.time", return_value=100.0),
+            ):
+                result = router._voice("Test.")
+
+            self.assertTrue(result.delivered)
+            self.assertEqual(result.channel, "macos_say")
+            self.assertEqual(called, ["Test."])
+            openai_tts.assert_not_called()  # the paid backend is never invoked
+
+    def test_force_backend_none_honors_configured_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                voice_backend="openai_tts",
+                voice_name="marin",
+            )
+            router = DeliveryRouter(config)  # force_backend defaults to None
+
+            with (
+                patch.object(router, "_openai_tts", return_value=DeliveryResult(channel="openai_tts", delivered=True, spoken=True)) as openai_tts,
+                patch("agent_voice.delivery.router.time.time", return_value=100.0),
+            ):
+                result = router._voice("Test.")
+
+            self.assertEqual(result.channel, "openai_tts")
+            openai_tts.assert_called_once()
+
     def test_openai_tts_estimates_token_cost_and_records_request_ids(self) -> None:
         class FakeResponse:
             headers = {"x-request-id": "req_123"}

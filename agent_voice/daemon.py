@@ -1,21 +1,36 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import AgentVoiceConfig, load_config
-from .db import connect, fetch_pending_events, init_db, mark_events_processed
+from .db import connect, fetch_pending_events, init_db, mark_events_processed, prune_processed_events, vacuum_db
 from .delivery import DeliveryRouter
+from .heartbeat import write_heartbeat
 from .intelligence.fallback import build_grouped_message
 from .intelligence.pipeline_log import log_summary_pipeline
 from .intelligence.summarizer import summarize_notification
 from .models import EventType, NotificationCategory, now_ts, stable_hash
-from .runtime import clear_active_voice_sessions, set_active_voice_sessions
+from .runtime import (
+    clear_active_voice_sessions,
+    read_runtime_state,
+    set_active_voice_sessions,
+    write_runtime_state,
+)
 from .session_state import NotificationCandidate, SessionStateManager
+from .usage import fetch_usage_stats, start_of_day_epoch, start_of_month_epoch
+
+# How often the daemon runs a VACUUM to reclaim space from pruned rows.
+VACUUM_INTERVAL_SECONDS = 24 * 60 * 60
+# Voice channels that constitute a paid/spoken delivery for rate-limit accounting.
+VOICE_CHANNELS = ("openai_tts", "macos_say")
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +38,139 @@ class ProcessResult:
     processed_events: int
     notifications_created: int
     notifications_delivered: int
+
+
+def _agent_version() -> str:
+    try:
+        from . import __version__
+
+        if __version__:
+            return str(__version__)
+    except Exception:  # pragma: no cover - defensive
+        pass
+    try:
+        from importlib import metadata
+
+        return metadata.version("voiccce")
+    except Exception:  # pragma: no cover - metadata absent in source checkouts
+        return "unknown"
+
+
+def _log(message: str) -> None:
+    """Emit a timestamped daemon log line to stderr (captured into daemon.log)."""
+    print(f"[voiccce daemon] {message}", file=sys.stderr, flush=True)
+
+
+def in_quiet_hours(config: AgentVoiceConfig, *, now: float | None = None) -> bool:
+    """Return whether the wall clock is currently inside the quiet-hours window.
+
+    The window is an ``HH:MM``–``HH:MM`` range in the configured timezone and may
+    wrap past midnight (e.g. ``23:00``–``09:00``). Returns ``False`` when quiet
+    hours are disabled. ``now`` is wall-clock epoch seconds (defaults to the real
+    current time) — independent of the event-processing clock.
+    """
+    if not config.quiet_hours_enabled:
+        return False
+    try:
+        tz = ZoneInfo(config.timezone)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        tz = datetime.now().astimezone().tzinfo
+    current = datetime.fromtimestamp(time.time() if now is None else now, tz)
+    minutes = current.hour * 60 + current.minute
+    start = _hhmm_to_minutes(config.quiet_hours_from)
+    end = _hhmm_to_minutes(config.quiet_hours_to)
+    if start == end:
+        return False
+    if start < end:
+        return start <= minutes < end
+    # Window wraps past midnight: inside if at/after start OR before end.
+    return minutes >= start or minutes < end
+
+
+def _hhmm_to_minutes(value: str) -> int:
+    hour, _, minute = value.partition(":")
+    try:
+        return int(hour) * 60 + int(minute)
+    except ValueError:
+        return 0
+
+
+def run_maintenance(
+    conn: sqlite3.Connection,
+    config: AgentVoiceConfig,
+    *,
+    current_time: int,
+    now: float | None = None,
+) -> int:
+    """Prune expired processed events and VACUUM periodically.
+
+    Returns the number of events pruned this cycle. Retention uses the event clock
+    (``current_time``) so the cutoff matches stored ``created_at`` epochs; the
+    VACUUM cadence uses the wall clock (``now``) tracked in the runtime state, so a
+    daemon that just started establishes a baseline instead of vacuuming on its
+    first cycle. Errors are swallowed so maintenance never crashes the daemon.
+    """
+    pruned = 0
+    if config.event_retention_days > 0:
+        cutoff = current_time - config.event_retention_days * 86400
+        try:
+            pruned = prune_processed_events(conn, older_than_epoch=cutoff)
+        except sqlite3.Error as exc:  # pragma: no cover - defensive
+            _log(f"event prune failed: {exc}")
+
+    wall_now = time.time() if now is None else now
+    try:
+        state = read_runtime_state(config)
+        last_vacuum = state.get("last_vacuum_at")
+        if not isinstance(last_vacuum, (int, float)):
+            # First sighting: baseline now without vacuuming.
+            state["last_vacuum_at"] = wall_now
+            write_runtime_state(config, state)
+        elif wall_now - float(last_vacuum) >= VACUUM_INTERVAL_SECONDS:
+            vacuum_db(conn)
+            state["last_vacuum_at"] = wall_now
+            write_runtime_state(config, state)
+            _log("ran periodic VACUUM")
+    except (OSError, sqlite3.Error) as exc:  # pragma: no cover - defensive
+        _log(f"vacuum maintenance failed: {exc}")
+    return pruned
+
+
+def _spend_cap_reached(conn: sqlite3.Connection, config: AgentVoiceConfig) -> str | None:
+    """Return ``"daily"``/``"monthly"`` when a configured spend cap is at/over budget.
+
+    Spend is the total audio + summary cost recorded since the start of the current
+    local day (or month) in the configured timezone. Caps of ``0`` mean "no cap".
+    """
+    if config.daily_spend_cap_usd > 0:
+        since = start_of_day_epoch(config.timezone)
+        stats = fetch_usage_stats(conn, since=since)
+        spend = stats.audio_cost_usd + stats.summary_cost_usd
+        if spend >= config.daily_spend_cap_usd:
+            return "daily"
+    if config.monthly_spend_cap_usd > 0:
+        since = start_of_month_epoch(config.timezone)
+        stats = fetch_usage_stats(conn, since=since)
+        spend = stats.audio_cost_usd + stats.summary_cost_usd
+        if spend >= config.monthly_spend_cap_usd:
+            return "monthly"
+    return None
+
+
+def _recent_voice_delivery_count(conn: sqlite3.Connection, since: int) -> int:
+    """Number of voice notifications spoken at/after ``since`` (rate-limit window)."""
+    placeholders = ",".join("?" * len(VOICE_CHANNELS))
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) FROM notifications
+        WHERE channel IN ({placeholders})
+          AND spoken = 1
+          AND delivered_at IS NOT NULL
+          AND delivered_at >= ?
+        """,
+        (*VOICE_CHANNELS, since),
+    ).fetchone()
+    return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
 
 def process_once(
@@ -66,6 +214,9 @@ def process_once(
         candidates.sort(key=lambda candidate: (candidate.priority, candidate.created_at))
 
         voice_allowed = config.voice_enabled
+        desktop_allowed = config.desktop_enabled
+        force_backend: str | None = None
+        suppressed_reason: str | None = None
         if deliver and not terminal_only and voice_allowed and config.min_seconds_between_voice_messages > 0:
             since = current_time - config.min_seconds_between_voice_messages
             recent_sessions = _recently_voiced_sessions(conn, since)
@@ -75,6 +226,41 @@ def process_once(
             # (no overlap), so distinct sessions are announced one after another.
             if candidate_sessions and candidate_sessions <= recent_sessions:
                 voice_allowed = False
+
+        # Quiet hours: silence voice and/or desktop in the configured window. This
+        # is enforced at the daemon layer so DeliveryRouter's core semantics stay
+        # intact (it never consults the clock).
+        if deliver and not terminal_only and in_quiet_hours(config):
+            if not config.quiet_hours_voice and voice_allowed:
+                voice_allowed = False
+                suppressed_reason = "quiet_hours"
+            if not config.quiet_hours_desktop:
+                desktop_allowed = False
+
+        # Rate limit: count voice notifications spoken in the trailing 60s and, once
+        # at/over the cap, suppress voice for this cycle (group it down to a silent
+        # channel) so no paid TTS — or paid summary — request is made.
+        if deliver and not terminal_only and voice_allowed and config.max_events_per_minute > 0:
+            recent_voice = _recent_voice_delivery_count(conn, current_time - 60)
+            if recent_voice >= config.max_events_per_minute:
+                voice_allowed = False
+                suppressed_reason = "rate_limited"
+
+        # Spend cap: before any paid summary/TTS, total today's (and this month's)
+        # spend and, when at/over a cap, fall back to the free macos_say backend so
+        # no paid request is made. Logged once per cycle.
+        if (
+            deliver
+            and not terminal_only
+            and voice_allowed
+            and config.voice_backend == "openai_tts"
+        ):
+            capped = _spend_cap_reached(conn, config)
+            if capped is not None:
+                force_backend = "macos_say"
+                _log(
+                    f"{capped} spend cap reached — falling back to free macos_say for this cycle"
+                )
 
         summary_cost_usd = 0.0
         summary_result = None
@@ -86,7 +272,15 @@ def process_once(
             source_text = primary.summary_source_text or primary.message
         else:
             source_text = primary.message
-        if deliver and not terminal_only and voice_allowed and len(candidates) == 1:
+        # Skip the paid GPT summary when the spend cap forced the free backend —
+        # the summary is itself a metered call we must not make over the cap.
+        if (
+            deliver
+            and not terminal_only
+            and voice_allowed
+            and force_backend is None
+            and len(candidates) == 1
+        ):
             summary_result = summarize_notification(config, primary)
             summary_cost_usd = summary_result.cost_usd
             if summary_result.message:
@@ -120,8 +314,18 @@ def process_once(
         error = None
 
         if deliver:
-            delivery_config = config if voice_allowed else replace(config, voice_enabled=False)
-            router = DeliveryRouter(delivery_config, terminal_only=terminal_only)
+            overrides: dict[str, object] = {}
+            if not voice_allowed:
+                overrides["voice_enabled"] = False
+            if not desktop_allowed:
+                overrides["desktop_enabled"] = False
+            delivery_config = replace(config, **overrides) if overrides else config
+            router_kwargs: dict[str, object] = {"terminal_only": terminal_only}
+            if force_backend is not None:
+                # Only pass the (additive) override when a spend cap forced it, so
+                # custom/fake routers without the parameter keep working.
+                router_kwargs["force_backend"] = force_backend
+            router = DeliveryRouter(delivery_config, **router_kwargs)
             voicing = voice_allowed and delivery_config.voice_enabled and not terminal_only
             if voicing:
                 # Record which sessions are being spoken so a UserPromptSubmit hook
@@ -159,9 +363,19 @@ def process_once(
                 spoken = successful.spoken
                 delivered_at = current_time
                 notifications_delivered = 1
+                _log(
+                    f"delivered via {channel} (cost ${audio_cost_usd:.4f}): {message}"
+                )
             elif results:
                 channel = results[-1].channel
                 error = "; ".join(result.error or "delivery failed" for result in results if not result.delivered)
+                _log(f"delivery failed via {channel}: {error}")
+            # No channel produced a delivery at all (e.g. every channel suppressed):
+            # record why voice was withheld so the audit trail is explicit.
+            if suppressed_reason and channel in {"none", ""}:
+                channel = suppressed_reason
+            elif suppressed_reason and not spoken:
+                error = "; ".join(filter(None, [error, f"voice suppressed: {suppressed_reason}"]))
 
         conn.execute(
             """
@@ -316,8 +530,17 @@ def maybe_reload_config(
     try:
         return load_config(config_path), current_mtime
     except Exception as exc:  # partial write / transient parse error — retry next cycle
-        print(f"[voiccce daemon] config reload failed: {exc}", file=sys.stderr, flush=True)
+        _log(f"config reload failed: {exc}")
         return config, last_mtime
+
+
+def _startup_banner(config: AgentVoiceConfig) -> str:
+    return (
+        f"started v{_agent_version()} pid={os.getpid()} "
+        f"voice_backend={config.voice_backend} "
+        f"poll_interval={config.poll_interval_ms}ms "
+        f"db={config.database_path}"
+    )
 
 
 def run_daemon(config: AgentVoiceConfig, *, once: bool = False, deliver: bool = True, terminal_only: bool = False) -> None:
@@ -325,9 +548,19 @@ def run_daemon(config: AgentVoiceConfig, *, once: bool = False, deliver: bool = 
     init_db(conn)
     config_path = config.config_path
     last_mtime = _config_mtime(config_path)
+    _log(_startup_banner(config))
     try:
         while True:
-            process_once(conn, config, deliver=deliver, terminal_only=terminal_only)
+            # Resilience: one bad cycle must never take the daemon down. Any error in
+            # event processing or maintenance is logged and the loop continues. A
+            # heartbeat is written every cycle (after the body) so liveness reflects a
+            # completed pass, not merely that the process is up.
+            try:
+                process_once(conn, config, deliver=deliver, terminal_only=terminal_only)
+                run_maintenance(conn, config, current_time=now_ts())
+            except Exception as exc:  # noqa: BLE001 - keep the daemon alive
+                _log(f"cycle error (continuing): {exc}")
+            write_heartbeat(config)
             if once:
                 return
             time.sleep(config.poll_interval_ms / 1000)

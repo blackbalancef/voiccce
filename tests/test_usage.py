@@ -14,6 +14,7 @@ from agent_voice.usage import (
     read_dashboard,
     sparkline,
     start_of_day_epoch,
+    start_of_month_epoch,
 )
 
 
@@ -248,6 +249,20 @@ class UsageTests(unittest.TestCase):
         self.assertLess(now - midnight, 24 * 3600)
         # unknown timezone falls back without raising
         self.assertIsInstance(start_of_day_epoch("Not/AZone", now=now), int)
+
+    def test_start_of_month_epoch_returns_first_of_month_midnight(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        now = 1781962200  # arbitrary fixed instant
+        start = start_of_month_epoch("Europe/Belgrade", now=now)
+        local = datetime.fromtimestamp(start, ZoneInfo("Europe/Belgrade"))
+        self.assertEqual((local.day, local.hour, local.minute, local.second), (1, 0, 0, 0))
+        self.assertLessEqual(start, now)
+        # The day-start of the same instant is on or after the month-start.
+        self.assertGreaterEqual(start_of_day_epoch("Europe/Belgrade", now=now), start)
+        # unknown timezone falls back without raising
+        self.assertIsInstance(start_of_month_epoch("Not/AZone", now=now), int)
 
     def test_sparkline_renders_relative_heights(self) -> None:
         self.assertEqual(sparkline([]), "")
