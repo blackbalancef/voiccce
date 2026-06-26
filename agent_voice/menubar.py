@@ -907,6 +907,7 @@ class AgentVoiceMenuBar(NSObject):
         # Apply immediately (no daemon restart — the hotkey lives in the menu bar).
         self._sync_hotkey(self._config())
         self.refresh()
+        self._keep_menu_open()
 
     def stopSpeaking_(self, sender) -> None:
         pid = stop_speaking(self._config())
@@ -945,6 +946,7 @@ class AgentVoiceMenuBar(NSObject):
         self._restart_daemon_if_running()
         self._log(f"Voice set to {voice}")
         self.refresh()
+        self._keep_menu_open()
 
     def selectTtsModel_(self, sender) -> None:
         model = str(sender.representedObject())
@@ -953,6 +955,7 @@ class AgentVoiceMenuBar(NSObject):
         self._restart_daemon_if_running()
         self._log(f"TTS model set to {model}")
         self.refresh()
+        self._keep_menu_open()
 
     def selectVoiceBackend_(self, sender) -> None:
         backend = str(sender.representedObject())
@@ -976,6 +979,7 @@ class AgentVoiceMenuBar(NSObject):
         self._restart_daemon_if_running()
         self._log(f"Voice engine set to {VOICE_BACKEND_LABELS.get(backend, backend)}")
         self.refresh()
+        self._keep_menu_open()
 
     def updateOpenAIKey_(self, sender) -> None:
         if self._prompt_and_store_openai_key():
@@ -1056,6 +1060,7 @@ class AgentVoiceMenuBar(NSObject):
         self._restart_daemon_if_running()
         self._log(f"Announce {event_name} {'enabled' if new_value else 'disabled'}")
         self.refresh()
+        self._keep_menu_open()
 
     def toggleIntegration_(self, sender) -> None:
         agent = str(sender.representedObject())
@@ -1066,6 +1071,7 @@ class AgentVoiceMenuBar(NSObject):
         else:
             self._add_integration(agent)
         self.refresh()
+        self._keep_menu_open()
 
     @_python_method
     def _add_integration(self, agent: str) -> None:
@@ -1147,6 +1153,31 @@ class AgentVoiceMenuBar(NSObject):
     def menuDidClose_(self, menu) -> None:
         self.menu_open = False
 
+    @_python_method
+    def _keep_menu_open(self) -> None:
+        """Re-open the status menu shortly after a setting change.
+
+        macOS dismisses an NSMenu on any item click, so after a toggle/selection we
+        re-pop the menu on the next runloop tick. This lets the user change several
+        settings — and run "Play test audio" — without re-clicking the menu bar each
+        time. Best-effort: if anything goes wrong the menu just stays closed as before.
+        """
+        try:
+            self.performSelector_withObject_afterDelay_("reopenMenu:", None, 0.18)
+        except Exception:
+            pass
+
+    def reopenMenu_(self, _sender) -> None:
+        try:
+            # The menu has closed by now (menu_open is False), so refresh() rebuilds
+            # it with the new state; then re-pop it from the status button.
+            self.refresh()
+            button = self.status_item.button()
+            if button is not None:
+                button.performClick_(None)
+        except Exception:
+            pass
+
     def playTestAudio_(self, sender) -> None:
         if self.test_playing:
             self._log("Test audio already playing")
@@ -1183,6 +1214,7 @@ class AgentVoiceMenuBar(NSObject):
         self._restart_daemon_if_running()
         self._log(f"Summary model set to {model}")
         self.refresh()
+        self._keep_menu_open()
 
     def changeLanguage_(self, sender) -> None:
         config = self._config()
@@ -1197,6 +1229,7 @@ class AgentVoiceMenuBar(NSObject):
         self._restart_daemon_if_running()
         self._log(f"Notification language set to {language_display_name(self._config().language)}")
         self.refresh()
+        self._keep_menu_open()
 
     @_python_method
     def _prompt_language(self, current: str) -> str | None:
@@ -1225,6 +1258,7 @@ class AgentVoiceMenuBar(NSObject):
         self._restart_daemon_if_running()
         self._log(f"Idle reply reminder {'enabled' if new_value else 'disabled'}")
         self.refresh()
+        self._keep_menu_open()
 
     def toggleInterruptOnReply_(self, sender) -> None:
         config = self._config()
@@ -1233,6 +1267,7 @@ class AgentVoiceMenuBar(NSObject):
         # Read fresh by the hook on each invocation — no daemon restart needed.
         self._log(f"Stop-audio-on-reply {'enabled' if new_value else 'disabled'}")
         self.refresh()
+        self._keep_menu_open()
 
     @_python_method
     def _restart_daemon_if_running(self) -> None:

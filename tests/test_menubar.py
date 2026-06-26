@@ -420,6 +420,7 @@ class CliMenuParityTests(unittest.TestCase):
         controller.config_path = str(config_path) if config_path else None
         controller.refresh = lambda: None
         controller._restart_daemon_if_running = MagicMock()
+        controller._keep_menu_open = MagicMock()
         return controller
 
     # --- voice backend switch -------------------------------------------------
@@ -583,9 +584,22 @@ class CliMenuParityTests(unittest.TestCase):
             controller.toggleIdleReminder_(SimpleNamespace())
             self.assertFalse(load_config(config_path).idle_reminder_enabled)
             controller._restart_daemon_if_running.assert_called_once()
+            # The menu is re-opened so several settings can be changed in a row.
+            controller._keep_menu_open.assert_called_once()
             # Toggling again re-enables it.
             controller.toggleIdleReminder_(SimpleNamespace())
             self.assertTrue(load_config(config_path).idle_reminder_enabled)
+
+    def test_setting_change_keeps_menu_open(self) -> None:
+        # A representative selection handler re-opens the menu after applying.
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            from agent_voice.config import set_voice_config
+
+            set_voice_config(config_path, backend="macos_say", voice="Alex")
+            controller = self._controller(config_path=config_path)
+            controller.selectVoice_(SimpleNamespace(representedObject=lambda: "Samantha"))
+            controller._keep_menu_open.assert_called_once()
 
     # --- integrations add/remove ---------------------------------------------
 
