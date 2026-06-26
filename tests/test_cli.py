@@ -106,6 +106,31 @@ class CliTests(unittest.TestCase):
                 root / "claude-personal" / "settings.json",
             )
 
+    def test_install_threads_config_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            captured: dict[str, Path] = {}
+
+            def fake_install(**kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    settings_path=root / "settings.json",
+                    backup_path=root / "backup.json",
+                    wrapper_path=root / "bin" / "hook",
+                    config_path=root / "config.toml",
+                    database_path=root / "events.sqlite3",
+                    installed_events=("Stop",),
+                )
+
+            with (
+                patch("agent_voice.cli.install_claude_code_personal", fake_install),
+                redirect_stdout(StringIO()),
+            ):
+                main(["--config", str(root / "config.toml"), "install", "claude-code"])
+
+            # --config must reach the installer so config/db land where asked.
+            self.assertEqual(captured["config_path"], root / "config.toml")
+
     def test_install_claude_code_accepts_settings_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings_path = Path(tmp) / "custom-settings.json"

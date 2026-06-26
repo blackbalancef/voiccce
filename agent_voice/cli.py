@@ -572,8 +572,12 @@ def cmd_install(args: argparse.Namespace) -> None:
 
 def _cmd_install(args: argparse.Namespace) -> None:
     _warn_non_macos()
+    # Honor --config so `install --config X` writes config/db to X (like `setup`).
+    config_kwargs: dict[str, Path] = (
+        {"config_path": Path(args.config).expanduser()} if args.config else {}
+    )
     if args.target == "claude-code":
-        result = install_claude_code_personal(verify=True, **_claude_install_kwargs(args))
+        result = install_claude_code_personal(verify=True, **config_kwargs, **_claude_install_kwargs(args))
         print(f"Claude Code personal settings: {result.settings_path}")
         print(f"Backup: {result.backup_path}")
         print(f"Hook wrapper: {result.wrapper_path}")
@@ -583,7 +587,7 @@ def _cmd_install(args: argparse.Namespace) -> None:
         return
 
     if args.target == "codex":
-        result = install_codex_personal(verify=True, **_codex_install_kwargs(args))
+        result = install_codex_personal(verify=True, **config_kwargs, **_codex_install_kwargs(args))
         print(f"Codex hooks: {result.hooks_path}")
         print(f"Backup: {result.backup_path}")
         print(f"Hook wrapper: {result.wrapper_path}")
@@ -595,7 +599,7 @@ def _cmd_install(args: argparse.Namespace) -> None:
         return
 
     if args.target == "pi":
-        result = install_pi_personal(verify=True, **_pi_install_kwargs(args))
+        result = install_pi_personal(verify=True, **config_kwargs, **_pi_install_kwargs(args))
         print(f"pi extension: {result.extension_path}")
         print(f"Hook wrapper: {result.wrapper_path}")
         print(f"Config: {result.config_path}")
