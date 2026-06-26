@@ -64,6 +64,7 @@ from .config import (
     set_config_language,
     set_events_config,
     set_hotkey_config,
+    set_reminders_config,
     set_summary_config,
     set_voice_config,
 )
@@ -554,12 +555,12 @@ class AgentVoiceMenuBar(NSObject):
             )
         )
 
-        reminders_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Announce idle reminders", "toggleIdleReminders:", ""
+        reminder_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Idle reply reminder", "toggleIdleReminder:", ""
         )
-        reminders_item.setTarget_(self)
-        reminders_item.setState_(1 if config.notify_input_needed else 0)
-        menu.addItem_(reminders_item)
+        reminder_item.setTarget_(self)
+        reminder_item.setState_(1 if config.idle_reminder_enabled else 0)
+        menu.addItem_(reminder_item)
 
         interrupt_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Stop audio when I reply", "toggleInterruptOnReply:", ""
@@ -1217,12 +1218,12 @@ class AgentVoiceMenuBar(NSObject):
         value = str(field.stringValue()).strip()
         return value or None
 
-    def toggleIdleReminders_(self, sender) -> None:
+    def toggleIdleReminder_(self, sender) -> None:
         config = self._config()
-        new_value = not config.notify_input_needed
-        set_events_config(config.config_path, input_needed=new_value)
+        new_value = not config.idle_reminder_enabled
+        set_reminders_config(config.config_path, enabled=new_value)
         self._restart_daemon_if_running()
-        self._log(f"Idle reminders {'enabled' if new_value else 'disabled'}")
+        self._log(f"Idle reply reminder {'enabled' if new_value else 'disabled'}")
         self.refresh()
 
     def toggleInterruptOnReply_(self, sender) -> None:

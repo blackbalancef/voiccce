@@ -575,6 +575,18 @@ class CliMenuParityTests(unittest.TestCase):
             )
         setter.assert_not_called()
 
+    def test_toggle_idle_reminder_persists_and_restarts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            controller = self._controller(config_path=config_path)
+            # Default on; toggling disables the timed idle reminder.
+            controller.toggleIdleReminder_(SimpleNamespace())
+            self.assertFalse(load_config(config_path).idle_reminder_enabled)
+            controller._restart_daemon_if_running.assert_called_once()
+            # Toggling again re-enables it.
+            controller.toggleIdleReminder_(SimpleNamespace())
+            self.assertTrue(load_config(config_path).idle_reminder_enabled)
+
     # --- integrations add/remove ---------------------------------------------
 
     def test_toggle_integration_installs_when_not_wired(self) -> None:
