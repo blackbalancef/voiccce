@@ -344,6 +344,7 @@ If `voiccce uninstall` is unavailable, do it by hand:
 - **I hear nothing.** Run `voiccce doctor` for a full health check, then `voiccce test` to send a sample notification. Check that you are not muted (`voiccce unmute`), that you are outside quiet hours (default 23:00–09:00, where voice is suppressed), and that your OpenAI key is valid (`voiccce secret status openai`) — over a spend cap, Voiccce falls back to the free macOS voice.
 - **Daemon not running.** Start it with `voiccce start`, and inspect `voiccce logs --daemon` for errors.
 - **Doesn't start after a reboot.** Autostart is off by default; enable it with `voiccce autostart enable`.
+- **You run Claude Code from a custom config dir / profile (`CLAUDE_CONFIG_DIR`, e.g. `~/.claude-personal`).** `voiccce setup` wires the default `~/.claude/settings.json`. If your sessions use another dir, wire it explicitly: `voiccce install claude-code --claude-config-dir ~/.claude-personal` (repeat per profile). Note: `voiccce doctor`/`status` inspect only the default `~/.claude`, so they may report "wired" for the default while your active profile is not — the reliable check is to finish a task and listen. Restart any open session after wiring so it reloads the hooks.
 
 ## Privacy
 
