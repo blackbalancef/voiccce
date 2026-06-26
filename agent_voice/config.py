@@ -1299,6 +1299,33 @@ _MIGRATION_SECTIONS: tuple[str, ...] = (
     "reminders",
 )
 
+# Old default idle_reminder text (per language) that predates the short one-liner.
+# Existing configs that still carry the verbose default are upgraded in place so
+# they stop speaking the long "cache is still warm" sentence; a user's CUSTOM text
+# (anything not exactly equal to these) is never touched.
+_STALE_IDLE_REMINDER_DEFAULTS: dict[str, str] = {
+    "en": "Just a reminder: {project} is done and waiting for your reply — within about {minutes} minutes, while {agent}'s cache is still warm.",
+    "ru": "Напоминаю: {project} завершён и ждёт твоего ответа — примерно в течение {minutes} минут, пока кэш {agent} ещё тёплый.",
+}
+
+
+def _stale_message_upgrades(data: dict) -> dict[str, dict[str, str]]:
+    """Per-language message keys whose value equals a known old default and should
+    be replaced with the current bundled default."""
+    upgrades: dict[str, dict[str, str]] = {}
+    messages = data.get("messages", {})
+    if not isinstance(messages, dict):
+        return upgrades
+    for lang, old_default in _STALE_IDLE_REMINDER_DEFAULTS.items():
+        lang_messages = messages.get(lang, {})
+        if not isinstance(lang_messages, dict):
+            continue
+        if lang_messages.get("idle_reminder") == old_default:
+            new_default = DEFAULT_MESSAGE_TEMPLATES.get(lang, {}).get("idle_reminder")
+            if new_default and new_default != old_default:
+                upgrades.setdefault(f"messages.{lang}", {})["idle_reminder"] = new_default
+    return upgrades
+
 
 def _migrate_config(config_path: Path, data: dict) -> dict:
     """Back-fill any missing default keys for known sections and stamp the schema
@@ -1318,16 +1345,21 @@ def _migrate_config(config_path: Path, data: dict) -> dict:
         if missing:
             additions[section] = missing
 
+    upgrades = _stale_message_upgrades(data)
+
     meta = data.get("meta", {})
     stored_version = meta.get("schema_version") if isinstance(meta, dict) else None
     needs_version = stored_version != CONFIG_SCHEMA_VERSION
 
-    if not additions and not needs_version:
+    if not additions and not upgrades and not needs_version:
         return data
 
     try:
         for section, missing in additions.items():
             ensure_config_section_values(config_path, section, missing)
+        for section, replacements in upgrades.items():
+            # Replace (not just back-fill) the stale default value in place.
+            set_config_section_values(config_path, section, replacements)
         if needs_version:
             ensure_config_section_values(config_path, "meta", {"schema_version": CONFIG_SCHEMA_VERSION})
     except OSError:

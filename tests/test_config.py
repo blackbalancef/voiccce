@@ -459,6 +459,31 @@ class MigrationTests(unittest.TestCase):
 
             config = load_config(config_path)
             self.assertEqual(config.max_events_per_minute, 99)
+
+    def test_migration_upgrades_stale_idle_reminder_text(self) -> None:
+        from agent_voice.config import _STALE_IDLE_REMINDER_DEFAULTS
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            old = _STALE_IDLE_REMINDER_DEFAULTS["ru"]
+            config_path.write_text(
+                f'[messages.ru]\nidle_reminder = "{old}"\n', encoding="utf-8"
+            )
+
+            config = load_config(config_path)
+            # The verbose old default is replaced with the short current one.
+            self.assertEqual(config.message_templates["ru"]["idle_reminder"], "{project} ждёт твоего ответа.")
+            self.assertNotIn("кэш", config_path.read_text(encoding="utf-8"))
+
+    def test_migration_keeps_custom_idle_reminder_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            config_path.write_text(
+                '[messages.ru]\nidle_reminder = "мой текст {project}"\n', encoding="utf-8"
+            )
+            config = load_config(config_path)
+            # A user's custom text (not the old default) is never touched.
+            self.assertEqual(config.message_templates["ru"]["idle_reminder"], "мой текст {project}")
             self.assertEqual(config.daily_spend_cap_usd, 0.0)
 
 

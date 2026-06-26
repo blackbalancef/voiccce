@@ -313,6 +313,31 @@ class DaemonTests(unittest.TestCase):
             self.assertNotIn("full result I already produced", reminder)
             conn.close()
 
+    def test_idle_reminder_disabled_suppresses_event_driven_reminder(self) -> None:
+        # With the idle reminder turned off, an input-needed-after-completion event
+        # must NOT produce the "waiting for your reply" reminder phrasing.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                idle_reminder_enabled=False,
+            )
+            enqueue_event(conn, NormalizedEvent.build(
+                event_key="finished", agent_name="codex", event_type=EventType.TASK_FINISHED,
+                project_name="api", session_id="s1"))
+            process_once(conn, config, deliver=False, current_time=100)
+            enqueue_event(conn, NormalizedEvent.build(
+                event_key="idle", agent_name="codex", event_type=EventType.INPUT_NEEDED,
+                project_name="api", session_id="s1", ask_summary="need input"))
+            process_once(conn, config, deliver=False, current_time=110)
+
+            messages = [r["message"] for r in conn.execute("SELECT message FROM notifications ORDER BY id").fetchall()]
+            self.assertFalse(any("waiting for your reply" in m.lower() for m in messages))
+            conn.close()
+
     def test_input_needed_is_gated_when_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/events.sqlite3"

@@ -82,11 +82,13 @@ class SessionStateManager:
         duplicate_cooldown_seconds: int = 300,
         language: str = "en",
         message_templates: Mapping[str, Mapping[str, str]] | None = None,
+        idle_reminder_enabled: bool = True,
     ) -> None:
         self.conn = conn
         self.duplicate_cooldown_seconds = duplicate_cooldown_seconds
         self.language = language
         self.message_templates = message_templates or {}
+        self.idle_reminder_enabled = idle_reminder_enabled
 
     def apply_event(self, event: NormalizedEvent, *, now: int | None = None) -> NotificationCandidate | None:
         current_time = now or now_ts()
@@ -113,7 +115,8 @@ class SessionStateManager:
         )
 
         is_idle_reminder = (
-            new_status == SessionStatus.ATTENTION_REQUIRED
+            self.idle_reminder_enabled
+            and new_status == SessionStatus.ATTENTION_REQUIRED
             and event.event_type in {EventType.INPUT_NEEDED, EventType.SESSION_IDLE}
             and existing is not None
             and existing["last_notified_status"] == SessionStatus.COMPLETED.value

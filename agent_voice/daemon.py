@@ -380,6 +380,7 @@ def process_once(
         duplicate_cooldown_seconds=config.duplicate_cooldown_seconds,
         language=config.language,
         message_templates=config.message_templates,
+        idle_reminder_enabled=config.idle_reminder_enabled,
     )
     candidates_by_session: dict[str, NotificationCandidate] = {}
     processed_keys: list[str] = []
