@@ -928,6 +928,7 @@ class UpdateCommandTests(unittest.TestCase):
             config_path = Path(tmp) / "config.toml"
             with (
                 patch("agent_voice.cli._resolve_update_source", return_value=None),
+                patch("agent_voice.cli._update_uses_pipx", return_value=False),
                 patch("agent_voice.cli._update_install_command", return_value=["install"]) as command,
                 patch("agent_voice.cli.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run,
                 patch("agent_voice.cli.daemon_status", return_value=(None, False)),
@@ -949,7 +950,30 @@ class UpdateCommandTests(unittest.TestCase):
             command.assert_called_once_with(
                 "git+https://github.com/blackbalancef/voiccce@v2", editable=False
             )
-            run.assert_called_once_with(["install"], cwd=None)
+            run.assert_called_once_with(["install"], cwd=None, env=None)
+
+    def test_update_pipx_path_clears_venv_and_reinjects_extras(self) -> None:
+        # On the pipx path, the install runs with UV_VENV_CLEAR=1 (recreate the
+        # venv) and any injected extras are re-injected afterward.
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            with (
+                patch("agent_voice.cli._resolve_update_source", return_value=None),
+                patch("agent_voice.cli._update_uses_pipx", return_value=True),
+                patch("agent_voice.cli._installed_optional_extras", return_value=["pyobjc-framework-Cocoa"]),
+                patch("agent_voice.cli._update_install_command", return_value=["pipx", "install", "--force", "x"]),
+                patch("agent_voice.cli.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run,
+                patch("agent_voice.cli._reinject_extras") as reinject,
+                patch("agent_voice.cli.daemon_status", return_value=(None, False)),
+                patch("agent_voice.cli.menubar_status", return_value=(None, False)),
+                redirect_stdout(StringIO()),
+            ):
+                main(["--config", str(config_path), "update", "--no-hooks", "--no-probe"])
+
+            install_call = run.call_args_list[0]
+            self.assertEqual(install_call.kwargs["env"]["UV_VENV_CLEAR"], "1")
+            reinject.assert_called_once()
+            self.assertEqual(reinject.call_args.args[0], ["pyobjc-framework-Cocoa"])
 
     def test_update_restarts_running_services_after_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -958,6 +982,7 @@ class UpdateCommandTests(unittest.TestCase):
             config_path = root / "config.toml"
 
             with (
+                patch("agent_voice.cli._update_uses_pipx", return_value=False),
                 patch("agent_voice.cli._update_install_command", return_value=["install"]) as command,
                 patch("agent_voice.cli.subprocess.run", return_value=SimpleNamespace(returncode=0)) as run,
                 patch("agent_voice.cli._reapply_wired_hooks") as reapply,
@@ -973,7 +998,7 @@ class UpdateCommandTests(unittest.TestCase):
                 main(["--config", str(config_path), "update", "--source", str(source)])
 
             command.assert_called_once_with(str(source.resolve()), editable=False)
-            run.assert_called_once_with(["install"], cwd=str(source.resolve()))
+            run.assert_called_once_with(["install"], cwd=str(source.resolve()), env=None)
             reapply.assert_called_once()
             probe.assert_called_once()
             stop_daemon_mock.assert_called_once()

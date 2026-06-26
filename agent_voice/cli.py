@@ -1137,10 +1137,18 @@ def cmd_update(args: argparse.Namespace) -> None:
         print(f"Updating Voiccce from: {target}")
 
     before_version = _resolve_version()
-    command = _update_install_command(target, editable=bool(args.dev) and source is not None)
-    completed = subprocess.run(command, cwd=cwd)
+    editable = bool(args.dev) and source is not None
+    use_pipx = _update_uses_pipx(editable=editable)
+    # Capture injected extras (e.g. the menu bar's pyobjc) before the venv is
+    # recreated, so they can be re-injected afterward.
+    extras = _installed_optional_extras() if use_pipx else []
+    command = _update_install_command(target, editable=editable)
+    env = _install_env() if use_pipx else None
+    completed = subprocess.run(command, cwd=cwd, env=env)
     if completed.returncode != 0:
         raise SystemExit(f"Update failed with exit code {completed.returncode}.")
+    if extras:
+        _reinject_extras(extras, env=env)
     after_version = _resolve_version()
     if before_version == after_version:
         print(f"✓ Package updated (already up to date at {after_version})")
@@ -1277,6 +1285,16 @@ def _installed_source_path() -> Path | None:
     return Path(unquote(parsed.path)).expanduser()
 
 
+# Optional extras (pip distribution names) that `voiccce setup` injects on demand
+# rather than declaring as hard dependencies. They live in the pipx venv, so a
+# venv recreate drops them and we re-inject after an update.
+_OPTIONAL_EXTRA_PACKAGES: tuple[str, ...] = ("pyobjc-framework-Cocoa", "tiktoken")
+
+
+def _update_uses_pipx(*, editable: bool) -> bool:
+    return bool(_pipx_package_name() and shutil.which("pipx") and not editable)
+
+
 def _update_install_command(target: str, *, editable: bool = False) -> list[str]:
     """Build the install command for ``target`` (a checkout path or git URL spec).
 
@@ -1286,16 +1304,60 @@ def _update_install_command(target: str, *, editable: bool = False) -> list[str]
     when pipx is unavailable, fall back to ``pip install --force-reinstall``. The
     unconditional ``--no-deps`` was dropped so upgraded dependencies install too.
     """
-    pipx_package = _pipx_package_name()
-    if pipx_package and shutil.which("pipx") and not editable:
+    if _update_uses_pipx(editable=editable):
         return ["pipx", "install", "--force", target]
     pip_args = ["install", "--force-reinstall"]
     if editable:
         pip_args.append("-e")
     pip_args.append(target)
+    pipx_package = _pipx_package_name()
     if pipx_package and shutil.which("pipx"):
         return ["pipx", "runpip", pipx_package, *pip_args]
     return [sys.executable, "-m", "pip", *pip_args]
+
+
+def _install_env() -> dict[str, str]:
+    """Environment for a pipx install that must recreate the venv.
+
+    pipx's uv backend refuses to overwrite an existing venv unless ``UV_VENV_CLEAR``
+    is set, so ``pipx install --force`` otherwise fails on a re-run. Setting it makes
+    recreate-the-venv the default, which is what an update wants.
+    """
+    env = os.environ.copy()
+    env["UV_VENV_CLEAR"] = "1"
+    return env
+
+
+def _installed_optional_extras() -> list[str]:
+    """Return the optional-extra packages currently present in this environment.
+
+    These were injected (e.g. ``pyobjc-framework-Cocoa`` for the menu bar) and are
+    lost when the venv is recreated, so an update re-injects them afterward.
+    """
+    found: list[str] = []
+    for name in _OPTIONAL_EXTRA_PACKAGES:
+        try:
+            metadata.version(name)
+        except metadata.PackageNotFoundError:
+            continue
+        found.append(name)
+    return found
+
+
+def _reinject_extras(packages: list[str], *, env: dict[str, str] | None = None) -> None:
+    """Re-inject optional extras into the pipx venv after a recreate."""
+    pipx_package = _pipx_package_name()
+    if not packages or not pipx_package or not shutil.which("pipx"):
+        return
+    completed = subprocess.run(["pipx", "inject", pipx_package, *packages], env=env)
+    if completed.returncode == 0:
+        print(f"✓ Re-injected: {', '.join(packages)}")
+    else:
+        print(
+            "! Could not re-inject "
+            f"{', '.join(packages)}; the menu bar may need "
+            f"`pipx inject {pipx_package} {' '.join(packages)}`."
+        )
 
 
 def _pipx_package_name() -> str | None:
