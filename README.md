@@ -205,12 +205,21 @@ Run `voiccce config` with no flags to print the current configuration.
 | `--monthly-spend-cap USD` | Monthly OpenAI spend cap; `0` = no cap | `0` |
 | `--event-retention-days N` | Days to keep processed events before auto-prune + vacuum; `0` = keep forever | `30` |
 | `--interrupt-on-reply {on,off}` | Stop the current announcement when you reply into that session | `on` |
+| `--quiet-hours {on,off}` | Enable/disable the nightly quiet-hours window | `on` |
+| `--quiet-hours-from HH:MM` / `--quiet-hours-to HH:MM` | Quiet-hours window | `23:00` / `09:00` |
+| `--quiet-hours-voice {on,off}` / `--quiet-hours-desktop {on,off}` | Allow voice / desktop during quiet hours | voice off, desktop on |
 | `--reset` / `--reset [--reset-section NAME]` | Reset the whole config (or one `[section]`) to defaults; a backup is written first | — |
+| `--list-backups` | List `config.toml.bak-*` backups, newest first | — |
+| `--restore [BACKUP]` | Restore from a backup (newest if omitted); the current file is backed up first | — |
 
-Quiet hours live under `[quiet_hours]` in `config.toml` and are **enabled by
-default from 23:00 to 09:00** (now actually enforced). During quiet hours voice
-playback is suppressed while desktop notifications still appear; edit the
-`[quiet_hours]` block to change the window or `enabled`/`voice`/`desktop`.
+Quiet hours are **enabled by default from 23:00 to 09:00** (now actually
+enforced): voice playback is suppressed while desktop notifications still
+appear. Change it from the CLI — e.g. `voiccce config --quiet-hours off` to
+disable, or `voiccce config --quiet-hours-from 22:30 --quiet-hours-to 08:00`
+to move the window (or `--quiet-hours-voice on` to keep speaking at night).
+
+Every config change writes a timestamped `config.toml.bak-*` backup; use
+`voiccce config --list-backups` and `voiccce config --restore` to roll back.
 
 <details>
 <summary>OpenAI key and voice backend</summary>

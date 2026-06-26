@@ -22,15 +22,18 @@ from .config import (
     ConfigError,
     SUMMARY_PRIVACY_LEVELS,
     language_display_name,
+    list_config_backups,
     load_config,
     normalize_language,
     reset_config,
+    restore_config_backup,
     set_autostart_managed,
     set_config_language,
     set_daemon_config,
     set_events_config,
     set_hotkey_config,
     set_limits_config,
+    set_quiet_hours_config,
     set_summary_config,
     set_voice_config,
     write_default_config,
@@ -389,8 +392,25 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["on", "off"],
         help="Stop the current announcement when you reply into that session",
     )
+    config_cmd.add_argument(
+        "--quiet-hours",
+        choices=["on", "off"],
+        help="Enable or disable the nightly quiet-hours window",
+    )
+    config_cmd.add_argument("--quiet-hours-from", help="Quiet-hours start, HH:MM (e.g. 23:00)")
+    config_cmd.add_argument("--quiet-hours-to", help="Quiet-hours end, HH:MM (e.g. 09:00)")
+    config_cmd.add_argument("--quiet-hours-voice", choices=["on", "off"], help="Allow voice during quiet hours")
+    config_cmd.add_argument("--quiet-hours-desktop", choices=["on", "off"], help="Allow desktop notifications during quiet hours")
     config_cmd.add_argument("--reset", action="store_true", help="Reset config to defaults (a backup is written)")
     config_cmd.add_argument("--reset-section", help="Only reset this section (use with --reset), e.g. summary")
+    config_cmd.add_argument("--list-backups", action="store_true", help="List config backups (newest first) and exit")
+    config_cmd.add_argument(
+        "--restore",
+        nargs="?",
+        const="",
+        metavar="BACKUP",
+        help="Restore config from a backup (newest if no path given); the current file is backed up first",
+    )
     config_cmd.set_defaults(handler=cmd_config)
 
     secret = subparsers.add_parser("secret", help="Manage local secrets in macOS Keychain")
@@ -1412,6 +1432,26 @@ def _parse_event_flags(specs: list[str] | None) -> dict[str, bool]:
 
 
 def cmd_config(args: argparse.Namespace) -> None:
+    if args.list_backups:
+        backups = list_config_backups(args.config)
+        if not backups:
+            print("No config backups found.")
+            return
+        print("Config backups (newest first):")
+        for backup in backups:
+            print(f"  {backup}")
+        return
+
+    if args.restore is not None:
+        backup_arg = args.restore or None
+        try:
+            restored = restore_config_backup(args.config, backup_arg)
+        except ConfigError as exc:
+            raise SystemExit(str(exc))
+        print(f"Restored config from: {restored}")
+        print("Restart daemon to apply changes.")
+        return
+
     if args.reset:
         config_path = write_default_config(args.config)
         try:
@@ -1512,6 +1552,27 @@ def cmd_config(args: argparse.Namespace) -> None:
         config_path = set_voice_config(config_path, interrupt_on_user_input=interrupt)
         changed = True
 
+    quiet_options: dict[str, object] = {}
+    quiet_enabled = _toggle_flag(args.quiet_hours, "--quiet-hours")
+    if quiet_enabled is not None:
+        quiet_options["enabled"] = quiet_enabled
+    if args.quiet_hours_from is not None:
+        quiet_options["start"] = args.quiet_hours_from
+    if args.quiet_hours_to is not None:
+        quiet_options["end"] = args.quiet_hours_to
+    quiet_voice = _toggle_flag(args.quiet_hours_voice, "--quiet-hours-voice")
+    if quiet_voice is not None:
+        quiet_options["voice"] = quiet_voice
+    quiet_desktop = _toggle_flag(args.quiet_hours_desktop, "--quiet-hours-desktop")
+    if quiet_desktop is not None:
+        quiet_options["desktop"] = quiet_desktop
+    if quiet_options:
+        try:
+            config_path = set_quiet_hours_config(config_path, **quiet_options)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        changed = True
+
     config = load_config(args.config)
     normalize_language(config.language)
     print(f"Config: {config.config_path}")
@@ -1541,9 +1602,16 @@ def cmd_config(args: argparse.Namespace) -> None:
     print(f"Summary text output price per 1M tokens: {format_usd(config.summary_text_output_price_per_million_tokens_usd)}")
     print(f"Summary pipeline log: {'on' if config.summary_pipeline_log else 'off'}")
     print(f"Interrupt on reply: {'on' if config.voice_interrupt_on_user_input else 'off'}")
-    quiet = "off"
     if config.quiet_hours_enabled:
-        quiet = f"{config.quiet_hours_from}-{config.quiet_hours_to}"
+        allowed = []
+        if config.quiet_hours_voice:
+            allowed.append("voice")
+        if config.quiet_hours_desktop:
+            allowed.append("desktop")
+        allow_note = f"; allows {', '.join(allowed)}" if allowed else "; silences voice + desktop"
+        quiet = f"{config.quiet_hours_from}-{config.quiet_hours_to}{allow_note}"
+    else:
+        quiet = "off"
     print(f"Quiet hours: {quiet}")
     print(f"Max events per minute: {config.max_events_per_minute}")
     print(f"Daily spend cap: {format_usd(config.daily_spend_cap_usd) if config.daily_spend_cap_usd else 'none'}")

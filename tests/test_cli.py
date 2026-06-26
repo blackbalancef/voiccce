@@ -1643,6 +1643,51 @@ class ConfigSettersTests(unittest.TestCase):
             self.assertIn("Summary pipeline log:", output)
             self.assertIn("Interrupt on reply:", output)
 
+    def test_quiet_hours_disable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            output = self._run_config(config_path, "--quiet-hours", "off")
+            self.assertFalse(load_config(config_path).quiet_hours_enabled)
+            self.assertIn("Quiet hours: off", output)
+
+    def test_quiet_hours_window_and_voice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            self._run_config(
+                config_path,
+                "--quiet-hours", "on",
+                "--quiet-hours-from", "22:30",
+                "--quiet-hours-to", "08:00",
+                "--quiet-hours-voice", "on",
+            )
+            config = load_config(config_path)
+            self.assertEqual(config.quiet_hours_from, "22:30")
+            self.assertEqual(config.quiet_hours_to, "08:00")
+            self.assertTrue(config.quiet_hours_voice)
+
+    def test_quiet_hours_invalid_time_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            with redirect_stdout(StringIO()), self.assertRaises(SystemExit):
+                main(["--config", str(config_path), "config", "--quiet-hours-from", "25:99"])
+
+    def test_list_backups_and_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            self._run_config(config_path, "--voice", "marin")
+            self._run_config(config_path, "--voice", "cedar")
+            listing = self._run_config(config_path, "--list-backups")
+            self.assertIn("config.toml.bak-", listing)
+            output = self._run_config(config_path, "--restore")
+            self.assertIn("Restored config from:", output)
+
+    def test_restore_without_backups_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            with redirect_stdout(StringIO()), self.assertRaises(SystemExit):
+                main(["--config", str(config_path), "config", "--restore"])
+
 
 class TestCommandFeedbackTests(unittest.TestCase):
     def _router(self, results):

@@ -8,19 +8,22 @@ from agent_voice.config import (
     AgentVoiceConfig,
     ConfigError,
     language_display_name,
+    list_config_backups,
     load_config,
     normalize_hhmm,
     reset_config,
+    restore_config_backup,
     set_autostart_managed,
     set_config_language,
     set_daemon_config,
     set_events_config,
     set_limits_config,
+    set_quiet_hours_config,
     set_summary_config,
     set_voice_config,
     write_default_config,
 )
-from agent_voice.config import _atomic_write_config
+from agent_voice.config import _atomic_write_config, _backup_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -603,6 +606,79 @@ class ResetConfigTests(unittest.TestCase):
             write_default_config(config_path)
             with self.assertRaises(ValueError):
                 reset_config(config_path, section="does_not_exist")
+
+
+class QuietHoursSetterTests(unittest.TestCase):
+    def test_disable_and_set_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            set_quiet_hours_config(config_path, enabled=False)
+            self.assertFalse(load_config(config_path).quiet_hours_enabled)
+
+            set_quiet_hours_config(
+                config_path, enabled=True, start="22:30", end="08:00", voice=True
+            )
+            config = load_config(config_path)
+            self.assertTrue(config.quiet_hours_enabled)
+            self.assertEqual(config.quiet_hours_from, "22:30")
+            self.assertEqual(config.quiet_hours_to, "08:00")
+            self.assertTrue(config.quiet_hours_voice)
+
+    def test_invalid_time_raises_value_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            with self.assertRaises(ValueError):
+                set_quiet_hours_config(config_path, start="25:99")
+
+
+class ConfigBackupRestoreTests(unittest.TestCase):
+    def test_same_second_backups_do_not_collide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            first = _backup_config(config_path)
+            second = _backup_config(config_path)
+            self.assertNotEqual(first, second)
+            self.assertTrue(first.exists())
+            self.assertTrue(second.exists())
+
+    def test_list_backups_newest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            older = config_path.with_name("config.toml.bak-20200101000000")
+            newer = config_path.with_name("config.toml.bak-20300101000000")
+            older.write_text("x", encoding="utf-8")
+            newer.write_text("y", encoding="utf-8")
+            names = [b.name for b in list_config_backups(config_path)]
+            self.assertEqual(names[0], newer.name)
+            self.assertIn(older.name, names)
+
+    def test_restore_newest_recovers_prior_content_and_backs_up_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            set_voice_config(config_path, voice="marin")  # writes a backup of the prior file
+            # Mutate again so a backup capturing voice="marin" exists.
+            set_voice_config(config_path, voice="cedar")
+            backups_before = list_config_backups(config_path)
+            self.assertTrue(backups_before)
+
+            restored = restore_config_backup(config_path, backups_before[0])
+            self.assertTrue(restored.exists())
+            # Restoring writes a fresh backup of the just-replaced file.
+            self.assertGreater(len(list_config_backups(config_path)), len(backups_before))
+            # The restored file parses and is the chosen backup's content.
+            self.assertEqual(
+                config_path.read_text(encoding="utf-8"),
+                restored.read_text(encoding="utf-8"),
+            )
+
+    def test_restore_without_backups_raises_config_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            with self.assertRaises(ConfigError):
+                restore_config_backup(config_path)
 
 
 if __name__ == "__main__":

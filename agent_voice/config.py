@@ -934,6 +934,30 @@ def set_autostart_managed(path: str | os.PathLike[str] | None, managed: bool) ->
     return set_config_section_values(path, "autostart", {"managed": bool(managed)})
 
 
+def set_quiet_hours_config(
+    path: str | os.PathLike[str] | None,
+    *,
+    enabled: bool | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    voice: bool | None = None,
+    desktop: bool | None = None,
+) -> Path:
+    """Update the [quiet_hours] section. ``start``/``end`` are HH:MM in the config timezone."""
+    values: dict[str, str | int | float | bool] = {}
+    if enabled is not None:
+        values["enabled"] = bool(enabled)
+    if start is not None:
+        values["from"] = normalize_hhmm(start)
+    if end is not None:
+        values["to"] = normalize_hhmm(end)
+    if voice is not None:
+        values["voice"] = bool(voice)
+    if desktop is not None:
+        values["desktop"] = bool(desktop)
+    return set_config_section_values(path, "quiet_hours", values)
+
+
 def reset_config(
     path: str | os.PathLike[str] | None,
     section: str | None = None,
@@ -1285,11 +1309,68 @@ def _migrate_config(config_path: Path, data: dict) -> dict:
 
 
 def _backup_config(config_path: Path) -> Path:
-    """Copy ``config_path`` to ``<name>.bak-YYYYMMDDHHMMSS`` and return the backup."""
+    """Copy ``config_path`` to ``<name>.bak-YYYYMMDDHHMMSS`` and return the backup.
+
+    The filename is uniquified within a second (``-2``, ``-3``, ...) so a rapid
+    sequence of writes never overwrites an earlier backup.
+    """
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     backup_path = config_path.with_name(f"{config_path.name}.bak-{timestamp}")
+    counter = 2
+    while backup_path.exists():
+        backup_path = config_path.with_name(f"{config_path.name}.bak-{timestamp}-{counter}")
+        counter += 1
     backup_path.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
     backup_path.chmod(0o600)
+    return backup_path
+
+
+def list_config_backups(path: str | os.PathLike[str] | None = None) -> list[Path]:
+    """Return existing ``config.toml.bak-*`` backups, newest first."""
+    config_path = expand_path(path or DEFAULT_CONFIG_PATH)
+    pattern = f"{config_path.name}.bak-*"
+    backups = list(config_path.parent.glob(pattern))
+    # Names sort chronologically (zero-padded timestamp); newest = greatest.
+    return sorted(backups, key=lambda p: p.name, reverse=True)
+
+
+def restore_config_backup(
+    path: str | os.PathLike[str] | None = None,
+    backup: str | os.PathLike[str] | None = None,
+) -> Path:
+    """Restore the config from a backup, backing up the current file first.
+
+    With ``backup`` omitted, the most recent ``config.toml.bak-*`` is used. The
+    restored text is written atomically (validated first), so a corrupt backup
+    leaves the live config untouched. Returns the backup that was restored.
+    """
+    config_path = expand_path(path or DEFAULT_CONFIG_PATH)
+    if backup is not None:
+        backup_path = Path(backup).expanduser()
+        if not backup_path.is_absolute():
+            # Allow passing just the backup filename.
+            candidate = config_path.with_name(backup_path.name)
+            backup_path = candidate if candidate.exists() else backup_path
+    else:
+        backups = list_config_backups(config_path)
+        if not backups:
+            raise ConfigError(
+                "No config backups found to restore.",
+                path=config_path,
+                hint="Backups appear as config.toml.bak-* after any config change.",
+            )
+        backup_path = backups[0]
+
+    if not backup_path.exists():
+        raise ConfigError(
+            f"Backup not found: {backup_path}",
+            path=config_path,
+            hint="Run `voiccce config --list-backups` to see available backups.",
+        )
+
+    text = backup_path.read_text(encoding="utf-8")
+    # Backs up the current file (when present) before replacing it.
+    _atomic_write_config(config_path, text, backup=True)
     return backup_path
 
 
