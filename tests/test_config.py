@@ -673,6 +673,22 @@ class ConfigBackupRestoreTests(unittest.TestCase):
                 restored.read_text(encoding="utf-8"),
             )
 
+    def test_list_backups_orders_same_second_counters_numerically(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            write_default_config(config_path)
+            stamp = "20300101000000"
+            base = config_path.with_name(f"config.toml.bak-{stamp}")
+            two = config_path.with_name(f"config.toml.bak-{stamp}-2")
+            ten = config_path.with_name(f"config.toml.bak-{stamp}-10")
+            for p in (base, two, ten):
+                p.write_text("x", encoding="utf-8")
+            names = [b.name for b in list_config_backups(config_path)]
+            # -10 was written after -2, so it must sort newest despite lexical order.
+            self.assertEqual(names[0], ten.name)
+            self.assertLess(names.index(ten.name), names.index(two.name))
+            self.assertLess(names.index(two.name), names.index(base.name))
+
     def test_restore_without_backups_raises_config_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config_path = Path(tmp) / "config.toml"

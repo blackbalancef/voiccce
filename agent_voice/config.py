@@ -1325,13 +1325,31 @@ def _backup_config(config_path: Path) -> Path:
     return backup_path
 
 
+def _backup_sort_key(config_name: str, backup: Path) -> tuple[str, int]:
+    """Sort key for a ``<name>.bak-<timestamp>[-<counter>]`` file.
+
+    Returns ``(timestamp, counter)`` so same-second backups order by their numeric
+    counter (``-10`` after ``-2``) rather than lexically by name.
+    """
+    suffix = backup.name[len(f"{config_name}.bak-"):]
+    timestamp, _, counter = suffix.partition("-")
+    try:
+        counter_value = int(counter) if counter else 1
+    except ValueError:
+        counter_value = 1
+    return (timestamp, counter_value)
+
+
 def list_config_backups(path: str | os.PathLike[str] | None = None) -> list[Path]:
     """Return existing ``config.toml.bak-*`` backups, newest first."""
     config_path = expand_path(path or DEFAULT_CONFIG_PATH)
     pattern = f"{config_path.name}.bak-*"
     backups = list(config_path.parent.glob(pattern))
-    # Names sort chronologically (zero-padded timestamp); newest = greatest.
-    return sorted(backups, key=lambda p: p.name, reverse=True)
+    return sorted(
+        backups,
+        key=lambda p: _backup_sort_key(config_path.name, p),
+        reverse=True,
+    )
 
 
 def restore_config_backup(
@@ -1340,17 +1358,19 @@ def restore_config_backup(
 ) -> Path:
     """Restore the config from a backup, backing up the current file first.
 
-    With ``backup`` omitted, the most recent ``config.toml.bak-*`` is used. The
-    restored text is written atomically (validated first), so a corrupt backup
-    leaves the live config untouched. Returns the backup that was restored.
+    With ``backup`` falsy, the most recent ``config.toml.bak-*`` is used. The
+    restored text is TOML-syntax validated before it replaces the live file (an
+    invalid backup raises :class:`ConfigError` and leaves the config untouched);
+    out-of-range values still surface as :class:`ConfigError` at the next load.
+    Returns the backup that was restored.
     """
     config_path = expand_path(path or DEFAULT_CONFIG_PATH)
-    if backup is not None:
+    if backup:
         backup_path = Path(backup).expanduser()
-        if not backup_path.is_absolute():
-            # Allow passing just the backup filename.
-            candidate = config_path.with_name(backup_path.name)
-            backup_path = candidate if candidate.exists() else backup_path
+        if not backup_path.is_absolute() and not backup_path.exists():
+            # Allow passing just the backup filename (resolved in the config dir),
+            # but only when the given path itself does not exist.
+            backup_path = config_path.with_name(backup_path.name)
     else:
         backups = list_config_backups(config_path)
         if not backups:
