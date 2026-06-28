@@ -746,6 +746,73 @@ class QuietHoursTests(unittest.TestCase):
             conn.close()
 
 
+class MicrophoneGuardTests(unittest.TestCase):
+    def _run(self, *, suppress: bool, mic_active: bool):
+        tmp_ctx = tempfile.TemporaryDirectory()
+        tmp = tmp_ctx.name
+        db_path = f"{tmp}/events.sqlite3"
+        conn = connect(db_path)
+        init_db(conn)
+        config = AgentVoiceConfig(
+            config_path=Path(tmp) / "config.toml",
+            database_path=db_path,
+            suppress_when_mic_active=suppress,
+        )
+        enqueue_event(
+            conn,
+            NormalizedEvent.build(
+                event_key="finished",
+                agent_name="codex",
+                event_type=EventType.TASK_FINISHED,
+                project_name="api",
+                session_id="s1",
+            ),
+        )
+
+        seen_voice_enabled: list[bool] = []
+
+        class FakeDeliveryRouter:
+            def __init__(self, delivery_config, *, terminal_only: bool = False) -> None:
+                # Use the per-delivery config (process_once applies the voice_enabled
+                # override here), not the outer one, to mirror the real router.
+                self._cfg = delivery_config
+                seen_voice_enabled.append(delivery_config.voice_enabled)
+
+            def deliver(self, message: str) -> list[DeliveryResult]:
+                channel = "openai_tts" if self._cfg.voice_enabled else "macos_notification"
+                return [DeliveryResult(channel=channel, delivered=True)]
+
+        with (
+            patch("agent_voice.daemon.DeliveryRouter", FakeDeliveryRouter),
+            patch("agent_voice.daemon.microphone_in_use", return_value=mic_active) as mic_mock,
+        ):
+            process_once(conn, config, deliver=True, current_time=100)
+
+        row = conn.execute("SELECT channel, spoken, error FROM notifications").fetchone()
+        result = (seen_voice_enabled, dict(row), mic_mock)
+        conn.close()
+        tmp_ctx.cleanup()
+        return result
+
+    def test_voice_suppressed_when_microphone_active(self) -> None:
+        seen, row, _ = self._run(suppress=True, mic_active=True)
+        self.assertEqual(seen, [False])  # voice gated off while mic is live
+        self.assertEqual(row["channel"], "macos_notification")
+        self.assertEqual(row["spoken"], 0)
+        self.assertIn("mic_active", row["error"])
+
+    def test_voice_proceeds_when_microphone_inactive(self) -> None:
+        seen, row, _ = self._run(suppress=True, mic_active=False)
+        self.assertEqual(seen, [True])  # mic idle => voice allowed
+        self.assertEqual(row["channel"], "openai_tts")
+
+    def test_mic_not_checked_when_toggle_off(self) -> None:
+        # With the toggle off the mic state is irrelevant and must not even be probed.
+        seen, row, mic_mock = self._run(suppress=False, mic_active=True)
+        self.assertEqual(seen, [True])  # voice allowed despite an active mic
+        mic_mock.assert_not_called()
+
+
 class RateLimitTests(unittest.TestCase):
     def _seed_voice_deliveries(self, conn, *, count: int, delivered_at: int) -> None:
         for i in range(count):

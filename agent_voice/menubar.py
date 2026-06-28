@@ -569,6 +569,13 @@ class AgentVoiceMenuBar(NSObject):
         interrupt_item.setState_(1 if config.voice_interrupt_on_user_input else 0)
         menu.addItem_(interrupt_item)
 
+        mic_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Pause voice while mic is active", "togglePauseWhenMicActive:", ""
+        )
+        mic_item.setTarget_(self)
+        mic_item.setState_(1 if config.suppress_when_mic_active else 0)
+        menu.addItem_(mic_item)
+
     @_python_method
     def _add_announce_events_submenu(self, menu: object, config) -> None:
         parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -1266,6 +1273,15 @@ class AgentVoiceMenuBar(NSObject):
         set_voice_config(config.config_path, interrupt_on_user_input=new_value)
         # Read fresh by the hook on each invocation — no daemon restart needed.
         self._log(f"Stop-audio-on-reply {'enabled' if new_value else 'disabled'}")
+        self.refresh()
+        self._keep_menu_open()
+
+    def togglePauseWhenMicActive_(self, sender) -> None:
+        config = self._config()
+        new_value = not config.suppress_when_mic_active
+        set_voice_config(config.config_path, suppress_when_mic_active=new_value)
+        # The daemon reloads config each poll cycle, so no restart is needed.
+        self._log(f"Pause-voice-while-mic-active {'enabled' if new_value else 'disabled'}")
         self.refresh()
         self._keep_menu_open()
 

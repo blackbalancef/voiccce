@@ -277,6 +277,10 @@ api_key_keychain_account = "openai"
 instructions = "Speak naturally, calmly, and briefly. This is a short developer notification."
 timeout_seconds = 15
 interrupt_on_user_input = true
+# Pause spoken notifications while the microphone is in use anywhere on the system
+# (a call or recording), so the voice does not leak into the captured audio.
+# Desktop notifications still appear. Off by default.
+suppress_when_mic_active = false
 
 [hotkey]
 # Global keyboard shortcut (works in any app while the menu bar app runs) that
@@ -387,6 +391,7 @@ class AgentVoiceConfig:
     voice_instructions: str = "Speak naturally, calmly, and briefly. This is a short developer notification."
     voice_timeout_seconds: int = 15
     voice_interrupt_on_user_input: bool = True
+    suppress_when_mic_active: bool = False
     hotkey_enabled: bool = True
     hotkey_stop_speaking: str = DEFAULT_STOP_SPEAKING_HOTKEY
     summary_enabled: bool = True
@@ -540,6 +545,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AgentVoiceConfig:
         ),
         voice_timeout_seconds=int(voice.get("timeout_seconds", 15)),
         voice_interrupt_on_user_input=bool(voice.get("interrupt_on_user_input", True)),
+        suppress_when_mic_active=bool(voice.get("suppress_when_mic_active", False)),
         hotkey_enabled=bool(hotkey.get("enabled", True)),
         hotkey_stop_speaking=str(hotkey.get("stop_speaking", DEFAULT_STOP_SPEAKING_HOTKEY)),
         summary_enabled=bool(summary.get("enabled", True)),
@@ -830,10 +836,13 @@ def set_voice_config(
     instructions: str | None = None,
     api_key_env: str | None = None,
     interrupt_on_user_input: bool | None = None,
+    suppress_when_mic_active: bool | None = None,
 ) -> Path:
     values: dict[str, str | int | float | bool] = {}
     if interrupt_on_user_input is not None:
         values["interrupt_on_user_input"] = bool(interrupt_on_user_input)
+    if suppress_when_mic_active is not None:
+        values["suppress_when_mic_active"] = bool(suppress_when_mic_active)
     if backend is not None:
         values["backend"] = normalize_voice_backend(backend)
     if voice is not None:

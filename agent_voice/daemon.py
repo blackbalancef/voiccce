@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .audio_input import microphone_in_use
 from .config import AgentVoiceConfig, cache_warm_minutes, load_config
 from .db import (
     connect,
@@ -290,6 +291,17 @@ def deliver_due_reminders(
                 suppressed_reason = "quiet_hours"
             if not config.quiet_hours_desktop:
                 desktop_allowed = False
+        # Same microphone guard as process_once: do not speak an idle reminder into a
+        # live mic (call/recording). Desktop still delivers.
+        if (
+            deliver
+            and not terminal_only
+            and voice_allowed
+            and config.suppress_when_mic_active
+            and microphone_in_use()
+        ):
+            voice_allowed = False
+            suppressed_reason = "mic_active"
         if deliver and not terminal_only and voice_allowed:
             if _spend_cap_reached(conn, config) is not None and config.voice_backend == "openai_tts":
                 force_backend = "macos_say"
@@ -431,6 +443,20 @@ def process_once(
                 suppressed_reason = "quiet_hours"
             if not config.quiet_hours_desktop:
                 desktop_allowed = False
+
+        # Microphone guard: if voice would otherwise play while the mic is live
+        # anywhere on the system (a call or recording), suppress it so the spoken
+        # notification does not leak into the captured audio. Desktop/terminal still
+        # deliver, and the paid summary below is skipped with voice off. Opt-in.
+        if (
+            deliver
+            and not terminal_only
+            and voice_allowed
+            and config.suppress_when_mic_active
+            and microphone_in_use()
+        ):
+            voice_allowed = False
+            suppressed_reason = "mic_active"
 
         # Rate limit: count voice notifications spoken in the trailing 60s and, once
         # at/over the cap, suppress voice for this cycle (group it down to a silent

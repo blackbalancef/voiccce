@@ -590,6 +590,20 @@ class CliMenuParityTests(unittest.TestCase):
             controller.toggleIdleReminder_(SimpleNamespace())
             self.assertTrue(load_config(config_path).idle_reminder_enabled)
 
+    def test_toggle_pause_when_mic_active_persists_without_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.toml"
+            controller = self._controller(config_path=config_path)
+            # Default off; toggling enables the mic-aware voice pause.
+            controller.togglePauseWhenMicActive_(SimpleNamespace())
+            self.assertTrue(load_config(config_path).suppress_when_mic_active)
+            # The daemon reloads config each poll cycle, so no restart is needed.
+            controller._restart_daemon_if_running.assert_not_called()
+            controller._keep_menu_open.assert_called_once()
+            # Toggling again disables it.
+            controller.togglePauseWhenMicActive_(SimpleNamespace())
+            self.assertFalse(load_config(config_path).suppress_when_mic_active)
+
     def test_setting_change_keeps_menu_open(self) -> None:
         # A representative selection handler re-opens the menu after applying.
         with tempfile.TemporaryDirectory() as tmp:
