@@ -338,6 +338,44 @@ class DaemonTests(unittest.TestCase):
             self.assertFalse(any("waiting for your reply" in m.lower() for m in messages))
             conn.close()
 
+    def test_idle_prompt_after_completion_is_dropped_when_reminders_off(self) -> None:
+        # Repro of the double-spoken summary: Claude Code fires a native
+        # Notification(idle_prompt) ~1 min after Stop, carrying the SAME final turn.
+        # With idle reminders off that nudge must be dropped entirely — not fall
+        # through to a full "needs attention" re-read of the just-finished turn.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/events.sqlite3"
+            conn = connect(db_path)
+            init_db(conn)
+            config = AgentVoiceConfig(
+                config_path=Path(tmp) / "config.toml",
+                database_path=db_path,
+                idle_reminder_enabled=False,
+            )
+            final_turn = "Verdict: continue — the project is alive and worth it."
+            enqueue_event(conn, NormalizedEvent.build(
+                event_key="finished", agent_name="claude-code",
+                event_type=EventType.TASK_FINISHED, project_name="staup-exploration",
+                session_id="s1", ask_summary=final_turn))
+            first = process_once(conn, config, deliver=False, current_time=100)
+            self.assertEqual(first.notifications_created, 1)
+
+            enqueue_event(conn, NormalizedEvent.build(
+                event_key="idle", agent_name="claude-code",
+                event_type=EventType.INPUT_NEEDED, project_name="staup-exploration",
+                session_id="s1", attention_reason="idle_prompt", ask_summary=final_turn))
+            second = process_once(conn, config, deliver=False, current_time=160)
+
+            # The idle nudge created no second notification (no second TTS), and the
+            # only notification on record is the original completion summary.
+            self.assertEqual(second.notifications_created, 0)
+            rows = conn.execute(
+                "SELECT category FROM notifications ORDER BY id"
+            ).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertNotIn("needs_attention", {r["category"] for r in rows})
+            conn.close()
+
     def test_input_needed_is_gated_when_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = f"{tmp}/events.sqlite3"

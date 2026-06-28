@@ -114,17 +114,27 @@ class SessionStateManager:
             current_time,
         )
 
-        is_idle_reminder = (
-            self.idle_reminder_enabled
-            and new_status == SessionStatus.ATTENTION_REQUIRED
+        # An INPUT_NEEDED / SESSION_IDLE event arriving for a session we already
+        # announced as COMPLETED is the agent's "still waiting on you" nudge, not a
+        # fresh question — its ask_summary merely echoes the just-finished turn (e.g.
+        # Claude Code's native Notification with notification_type=idle_prompt, fired
+        # ~1 min after Stop with the same final text). Detection is independent of the
+        # toggle so the toggle can govern BOTH the on and off behavior below.
+        is_idle_after_completion = (
+            new_status == SessionStatus.ATTENTION_REQUIRED
             and event.event_type in {EventType.INPUT_NEEDED, EventType.SESSION_IDLE}
             and existing is not None
             and existing["last_notified_status"] == SessionStatus.COMPLETED.value
         )
+        # Idle-reminder toggle off: drop the nudge entirely so the finished turn is
+        # not spoken a second time. On: speak the short reminder instead of re-reading
+        # the assistant message.
+        if is_idle_after_completion and not self.idle_reminder_enabled:
+            should_notify = False
 
         message = ""
         candidate: NotificationCandidate | None = None
-        if should_notify and is_idle_reminder:
+        if should_notify and is_idle_after_completion:
             message = self._build_reminder_message(event)
         elif should_notify:
             message = build_single_message(
